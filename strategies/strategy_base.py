@@ -19,3 +19,36 @@ class Strategy(ABC):
         :return: "Buy" / "Sell" / "Short" / "Cover" / None
         """
         pass
+
+    def generate_signals(self, df):
+        """產生整段資料的交易訊號序列。
+
+        逐列傳入 :meth:`generate_signal`，並根據回傳的字串更新持倉狀態，
+        最終回傳對應的數值信號（1、-1、0）Series。
+
+        1 -> Buy
+        -1 -> Short
+        0 -> 觀望或平倉
+        """
+        import pandas as pd
+
+        signals = []
+        position = None
+
+        for idx in range(len(df)):
+            slice_df = df.iloc[: idx + 1]
+            action = self.generate_signal(slice_df, idx, position)
+
+            if action == "Buy":
+                position = "Long"
+                signals.append(1)
+            elif action == "Short":
+                position = "Short"
+                signals.append(-1)
+            elif action in ("Sell", "Cover"):
+                position = None
+                signals.append(0)
+            else:
+                signals.append(0)
+
+        return pd.Series(signals, index=df.index)
