@@ -66,9 +66,11 @@ def generate_monthly_report(
         "數值": [total_trades, round(win_rate, 2), round(final_return * 100, 2)]
     })
 
-    # === 輸出 Excel ===
-    report.to_excel(f"{output_prefix}_monthly_report.xlsx", sheet_name="每月績效", index=False, engine="openpyxl")
-    summary.to_excel(f"{output_prefix}_monthly_report.xlsx", sheet_name="總體統計", index=False, engine="openpyxl", mode='a')
+    # === 輸出 Excel：使用 ExcelWriter 正確寫入多工作表 ===
+    excel_path = f"{output_prefix}_monthly_report.xlsx"
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        report.to_excel(writer, sheet_name="每月績效", index=False)
+        summary.to_excel(writer, sheet_name="總體統計", index=False)
 
     # === 輸出 XQ 回測格式 CSV ===
     if not trade_log_df.empty:
