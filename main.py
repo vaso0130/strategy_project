@@ -46,6 +46,10 @@ df['date'] = pd.to_datetime(df['date']).dt.date
 df = df.sort_values("date").reset_index(drop=True)
 
 # 補上策略可能使用的欄位名稱與指標
+# 確保模擬器需要的欄位名稱存在且大小寫正確
+df["Open"] = df["open"]   # 新增
+df["High"] = df["high"]   # 新增
+df["Low"] = df["low"]     # 新增
 df["Close"] = df["close"]
 df["Volume"] = df["volume"]
 df["MA"] = df["Close"].rolling(window=20).mean()
