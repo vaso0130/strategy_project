@@ -28,35 +28,42 @@ def select_strategy(market_regime: str, lstm_signal: int, strategy_metrics: dict
     """
     strategy_text = format_strategy_metrics(strategy_metrics)
     signal_text = {1: "預測上漲", -1: "預測下跌", 0: "無明確趨勢"}.get(lstm_signal, "無明確趨勢")
+    valid_strategies = list(strategy_metrics.keys())
+    strategy_list = "\n".join(f"- {s}" for s in valid_strategies)
 
     prompt = f"""
-你是一位專業的量化交易顧問，請依據以下資訊，挑選一個最適合目前市場情況的策略名稱（只輸出策略名稱本身，勿加說明）：
+你是一位專業的量化交易顧問，請根據以下市場資訊，**只從下列清單中挑選一個最適合的策略名稱**。請注意：
+
+- 請只回覆清單中的一個「策略名稱」
+- 請不要多加說明或額外語句
+- 請不要回答「無法判斷」、「建議觀望」等語句
 
 市場型態：{market_regime}
 LSTM 預測：{signal_text}
+
 可選策略與績效如下：
 {strategy_text}
 
-請只回答策略名稱（例如：TrendStrategy），不要多加解釋。
+請從以下策略中選出一個最適合的（只能選一個）：
+{strategy_list}
+
+請只回答策略名稱，例如：TrendStrategy
 """
 
     if model is None:
         print("[警告] 未提供 GEMINI_API_KEY，已使用預設策略")
-        return list(strategy_metrics.keys())[0]
+        return valid_strategies[0]
 
     try:
         response = model.generate_content(prompt)
         response_text = response.text.strip()
 
-        # 驗證是否回傳在策略清單中
-        valid_strategies = list(strategy_metrics.keys())
-        for s in valid_strategies:
-            if s in response_text:
-                return s
-
-        print(f"[警告] Gemini 回傳無效策略名稱：{response_text}，已使用預設策略")
-        return valid_strategies[0]  # fallback 預設第一個策略
+        if response_text in valid_strategies:
+            return response_text
+        else:
+            print(f"[警告] Gemini 回傳無效策略名稱：{response_text}，已使用預設策略")
+            return valid_strategies[0]  # fallback 預設策略
 
     except Exception as e:
         print(f"[錯誤] Gemini API 呼叫失敗：{e}")
-        return list(strategy_metrics.keys())[0]  # fallback 預設策略
+        return valid_strategies[0]  # fallback 預設策略
