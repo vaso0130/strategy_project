@@ -47,11 +47,19 @@ df = df.sort_values("date").reset_index(drop=True)
 
 # 補上策略可能使用的欄位名稱與指標
 # 確保模擬器需要的欄位名稱存在且大小寫正確
-df["Open"] = df["open"]   # 新增
-df["High"] = df["high"]   # 新增
-df["Low"] = df["low"]     # 新增
-df["Close"] = df["close"]
-df["Volume"] = df["volume"]
+# 將欄位名稱重命名為大寫版本，假設 load_price_data 提供小寫版本
+df.rename(columns={
+    "open": "Open",
+    "high": "High",
+    "low": "Low",
+    "close": "Close", # MA 和 RSI 將使用此欄位
+    "volume": "Volume"
+}, inplace=True)
+
+# 確保必要的欄位存在，以防重命名未發生 (例如，如果 load_price_data 已返回大寫名稱)
+# 如果 'Close' 等欄位不存在，以下 MA 和 RSI 計算會出錯
+# 這裡假設 'Close' 欄位在重命名後或原本就存在
+
 df["MA"] = df["Close"].rolling(window=20).mean()
 
 def compute_rsi(series, window=14):
@@ -214,11 +222,8 @@ while current_day <= pd.to_datetime(END_DATE).date():
         
         all_signals_for_simulation.append({
             'date': current_day, # The date this signal applies to
-            'signal': signal_value_for_current_day_action,
-            'open': today_row['open'].iloc[0],
-            'close': today_row['close'].iloc[0],
-            'high': today_row['high'].iloc[0],
-            'low': today_row['low'].iloc[0]
+            'signal': signal_value_for_current_day_action
+            # 已移除 'open', 'close', 'high', 'low'，因為它們已存在於主 df 中
         })
     # else: # Optional: Log if a strategy generated no signals for past_df
         # print(f"[{current_day}] Strategy {selected_name} generated empty signals_df for past_df.")

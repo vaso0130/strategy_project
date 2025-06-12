@@ -40,7 +40,8 @@ class LSTMPredictor:
 
     def preprocess(self, prices):
         prices = prices.copy()
-        scaled = self.scaler.fit_transform(prices[['close']])
+        # scaled = self.scaler.fit_transform(prices[['close']])
+        scaled = self.scaler.fit_transform(prices[['Close']]) # 改為大寫 'Close'
         X, y = [], []
         for i in range(len(scaled) - self.lookback - self.predict_days):
             seq_x = scaled[i:i+self.lookback]
@@ -79,9 +80,11 @@ class LSTMPredictor:
 
         self.model.eval()
         prices = recent_prices.copy()
-        data = prices['close'].values[-self.lookback:]
+        # data = prices['close'].values[-self.lookback:]
+        data = prices['Close'].values[-self.lookback:] # 改為大寫 'Close'
         data_scaled = self.scaler.transform(
-            pd.DataFrame(data.reshape(-1, 1), columns=['close'])
+            # pd.DataFrame(data.reshape(-1, 1), columns=['close'])
+            pd.DataFrame(data.reshape(-1, 1), columns=['Close']) # 改為大寫 'Close'
         )
         input_tensor = torch.tensor(data_scaled.reshape(1, self.lookback, 1), dtype=torch.float32).to(self.device)
 

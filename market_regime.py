@@ -4,12 +4,12 @@ import numpy as np
 def calculate_market_regime(df: pd.DataFrame, window: int = 30) -> str:
     """
     根據過去 `window` 天的價格判斷市場型態：'trend' 或 'range'
-    df 必須包含欄位 ['date', 'close']
+    df 必須包含欄位 ['date', 'Close']
     """
     if len(df) < window:
         return 'range'  # 資料不足預設為盤整
 
-    closes = df['close'].tail(window).reset_index(drop=True)
+    closes = df['Close'].tail(window).reset_index(drop=True) # 改為大寫 'Close'
     returns = closes.pct_change().dropna()
 
     # 1. 計算波動率

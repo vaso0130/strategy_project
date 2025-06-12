@@ -37,7 +37,7 @@ class TradeSimulator:
 
         for i, row in merged_df.iterrows():
             current_date = row['date']
-            current_price = row['open'] # 假設以開盤價交易
+            current_price = row['Open'] # 假設以開盤價交易
             signal = row['signal']
 
             # 停損檢查 (簡易版，可再優化)
@@ -98,10 +98,10 @@ class TradeSimulator:
             # 記錄每日資產
             current_total_value = self.cash
             if self.holding and self.direction == 'long':
-                current_total_value += self.position * row['close'] # 以收盤價計算當日持有價值
+                current_total_value += self.position * row['Close'] # 以收盤價計算當日持有價值
             elif self.holding and self.direction == 'short':
                  # 空單的市值計算較複雜，簡化為：初始賣空所得 + (初始賣空價 - 現價) * 股數
-                current_total_value += (self.position * self.entry_price) + (self.entry_price - row['close']) * self.position
+                current_total_value += (self.position * self.entry_price) + (self.entry_price - row['Close']) * self.position
 
             self.daily_capital.append({'date': current_date, 'capital': current_total_value})
 
@@ -110,15 +110,15 @@ class TradeSimulator:
             last_row = merged_df.iloc[-1]
             last_trade = self.trades[-1]
             last_trade["exit_date"] = last_row['date']
-            last_trade["exit_price"] = last_row['close'] # 以最後一天收盤價平倉
+            last_trade["exit_price"] = last_row['Close'] # 以最後一天收盤價平倉
 
             if self.direction == 'long':
-                self.cash += self.position * last_row['close']
-                pnl = (last_row['close'] - self.entry_price) * self.position
+                self.cash += self.position * last_row['Close']
+                pnl = (last_row['Close'] - self.entry_price) * self.position
             elif self.direction == 'short':
-                self.cash -= self.position * last_row['close']
+                self.cash -= self.position * last_row['Close']
                 self.cash += self.position * self.entry_price
-                pnl = (self.entry_price - last_row['close']) * self.position
+                pnl = (self.entry_price - last_row['Close']) * self.position
             
             last_trade["pnl"] = pnl
             self.position = 0

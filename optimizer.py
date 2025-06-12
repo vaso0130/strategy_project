@@ -81,17 +81,31 @@ class StrategyOptimizer:
             # 並且 signals_df 只有 'date' 和 'signal'
             
             # 合併價格和訊號以計算報酬
-            merged_for_returns = pd.merge(price_df[['date', 'close']], signals_df[['date', 'signal']], on='date', how='left')
+            # merged_for_returns = pd.merge(price_df[['date', 'close']], signals_df[['date', 'signal']], on='date', how='left')
+            # 使用 'Close' (大寫)
+            merged_for_returns = pd.merge(price_df[['date', 'Close']], signals_df[['date', 'signal']], on='date', how='left')
             merged_for_returns['signal'] = merged_for_returns['signal'].fillna(0)
+            
+            # 計算每日回報率 (基於收盤價)
+            # merged_for_returns['price_change'] = merged_for_returns['close'].pct_change()
+            merged_for_returns['price_change'] = merged_for_returns['Close'].pct_change()
+            merged_for_returns['strategy_return'] = merged_for_returns['price_change'] * merged_for_returns['signal'].shift(1) # 訊號在隔天生效
+            merged_for_returns = merged_for_returns.dropna()
 
-            returns = merged_for_returns['close'].pct_change().fillna(0)
-            positions = merged_for_returns['signal'].shift().fillna(0) # 訊號通常是隔天生效
-            strat_returns = returns * positions
+            if merged_for_returns.empty:
+                continue  # 如果合併後的資料為空，則跳過此組合
+
+            # 計算年化報酬率和年化波動率
+            annual_return = merged_for_returns['strategy_return'].mean() * 252
+            annual_volatility = merged_for_returns['strategy_return'].std() * np.sqrt(252)
+
+            # 計算 Sharpe Ratio
             sharpe = (
-                strat_returns.mean() / strat_returns.std() * np.sqrt(252)
-                if strat_returns.std() != 0 and strat_returns.std() is not np.nan
+                annual_return / annual_volatility
+                if annual_volatility != 0 and annual_volatility is not np.nan
                 else 0
             )
+
             metrics['sharpe'] = sharpe
 
             score = self.evaluator(metrics)
