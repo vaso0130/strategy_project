@@ -14,7 +14,7 @@ class LSTMModel(nn.Module):
 
     def forward(self, x):
         out, _ = self.lstm(x)
-        out = out[:, -1, :]  # 取最後時間步的輸出
+        out = out[:, -1, :] # 取最後時間步的輸出
         out = self.fc(out)
         return self.activation(out)
 
@@ -26,14 +26,19 @@ class LSTMPredictor:
         self.model = LSTMModel()
         self.epochs = epochs
         self.lr = lr
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)
+
+        # 嘗試使用 GPU，若失敗則改用 CPU
+        try:
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda")
+                self.model.to(self.device)
+            else:
+                raise RuntimeError("CUDA not available")
+        except:
+            self.device = torch.device("cpu")
+            self.model.to(self.device)
 
     def preprocess(self, prices):
-        """
-        prices: DataFrame with ['date', 'close']
-        return: X (N, lookback, 1), y (N, 1)
-        """
         prices = prices.copy()
         scaled = self.scaler.fit_transform(prices[['close']])
         X, y = [], []
@@ -63,8 +68,7 @@ class LSTMPredictor:
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-            # 簡化訓練流程，僅跑一個 epoch 以縮短時間
-            break
+            break # 簡化訓練流程，僅跑一個 epoch 以縮短時間
 
     def predict(self, recent_prices):
         if len(recent_prices) < self.lookback:
