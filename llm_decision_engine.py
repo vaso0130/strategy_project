@@ -1,5 +1,6 @@
 import os
 import google.generativeai as genai
+from google.api_core import retry
 from dotenv import load_dotenv
 
 # 載入環境變數
@@ -56,7 +57,11 @@ LSTM 預測：{signal_text}
         return valid_strategies[0]
 
     try:
-        response = model.generate_content(prompt)
+        no_retry = retry.Retry(predicate=lambda exc: False)
+        response = model.generate_content(
+            prompt,
+            request_options={"timeout": 10, "retry": no_retry},
+        )
         response_text = response.text.strip()
 
         if response_text in valid_strategies:
