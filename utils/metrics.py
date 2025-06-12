@@ -25,11 +25,13 @@ def generate_monthly_report(
 
     # 日期標準化
     daily_df["date"] = pd.to_datetime(daily_df["date"])
-    if not trade_log_df.empty:
-        trade_log_df["entry_date"] = pd.to_datetime(trade_log_df["entry_date"])
-        trade_log_df["exit_date"] = pd.to_datetime(trade_log_df["exit_date"])
-    else:
-        trade_log_df = pd.DataFrame(columns=["entry_date","exit_date","entry_price","exit_price","side","pnl"])
+    if trade_log_df is None or trade_log_df.empty:
+        trade_log_df = pd.DataFrame(
+            columns=["entry_date", "exit_date", "entry_price", "exit_price", "side", "pnl"]
+        )
+
+    trade_log_df["entry_date"] = pd.to_datetime(trade_log_df["entry_date"])
+    trade_log_df["exit_date"] = pd.to_datetime(trade_log_df["exit_date"])
 
     # === 每月資產績效 ===
     daily_df["month"] = daily_df["date"].dt.to_period("M")
