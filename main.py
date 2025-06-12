@@ -69,8 +69,16 @@ if ENABLE_STRATEGY_OPTIMIZATION:
             "rsi_low": [45, 50],
             "rsi_high": [65, 70],
         },
-        "BreakoutStrategy": {"window": [15, 20]}, # 確保 BreakoutStrategy 的參數與其實際接受的參數一致
-        "VolumePriceStrategy": {"volume_ratio": [1.5, 2.0]}, # 確保 VolumePriceStrategy 的參數與其實際接受的參數一致
+        "BreakoutStrategy": { # 確保 BreakoutStrategy 的參數與其實際接受的參數一致
+            "window": [15, 20],
+            "rsi_low": [30, 40, 50], # Added
+            "rsi_high": [60, 70, 80] # Added
+        },
+        "VolumePriceStrategy": { # 確保 VolumePriceStrategy 的參數與其實際接受的參數一致
+            "volume_ratio": [1.5, 2.0],
+            "rsi_low": [30, 40, 50], # Added
+            "rsi_high": [60, 70, 80] # Added
+        },
     }
 
     eval_map = {
@@ -189,22 +197,27 @@ while current_day <= pd.to_datetime(END_DATE).date():
         all_signals_for_simulation = []
     
     # 儲存當日LLM選擇的策略所產生的訊號
-    # 注意：signals_df 是基於 past_df 產生的，可能包含多天訊號
-    # 我們只取 current_day 對應的訊號（如果策略設計是如此）
-    # 或者，策略 generate_signals 只回傳下一日的訊號
+    # signals_df is generated based on past_df.
+    # The last signal in signals_df (generated using data up to the end of past_df)
+    # is considered the action signal for current_day.
     
-    # 假設 strategy.generate_signals(past_df) 會回傳一個包含未來日期的訊號 DataFrame
-    # 我們需要篩選出 current_day 的訊號
-    day_specific_signal = signals_df[signals_df['date'] == current_day]
-    if not day_specific_signal.empty:
-         all_signals_for_simulation.append({
-             'date': current_day,
-             'signal': day_specific_signal['signal'].iloc[0],
-             'open': today_row['open'].iloc[0], # 加入當日價格資訊給模擬器
-             'close': today_row['close'].iloc[0],
-             'high': today_row['high'].iloc[0],
-             'low': today_row['low'].iloc[0]
-         })
+    # signals_df = strategy.generate_signals(past_df.copy()) # This line is already present a few lines above.
+                                                          # Ensure it's called once per strategy decision.
+
+    if not signals_df.empty:
+        # The signal generated based on the last day of past_df is the action for current_day
+        signal_value_for_current_day_action = signals_df['signal'].iloc[-1]
+        
+        all_signals_for_simulation.append({
+            'date': current_day, # The date this signal applies to
+            'signal': signal_value_for_current_day_action,
+            'open': today_row['open'].iloc[0],
+            'close': today_row['close'].iloc[0],
+            'high': today_row['high'].iloc[0],
+            'low': today_row['low'].iloc[0]
+        })
+    # else: # Optional: Log if a strategy generated no signals for past_df
+        # print(f"[{current_day}] Strategy {selected_name} generated empty signals_df for past_df.")
 
 
     if 'prev_strategy' not in locals() or prev_strategy != selected_name:
