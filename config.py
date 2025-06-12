@@ -9,6 +9,7 @@ STOP_LOSS_THRESHOLD = 0.08        # 停損線 8%
 ALLOW_SHORT_SELLING = True        # 是否允許放空
 
 # === LSTM 模型設定 ===
+LSTM_TRAIN_WINDOW = 100           # LSTM 模型訓練所需的最小資料點數
 LSTM_LOOKBACK_DAYS = 30           # LSTM 模型觀察的天數
 LSTM_PREDICT_DAYS = 10            # 預測未來幾天平均價格
 LSTM_RETRAIN_INTERVAL = 45        # 每幾天 retrain 一次
