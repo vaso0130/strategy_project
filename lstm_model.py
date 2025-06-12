@@ -1,0 +1,85 @@
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
+class LSTMModel(nn.Module):
+    def __init__(self, input_size=1, hidden_size=50, output_size=1):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+        self.activation = nn.Tanh()
+
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        out = out[:, -1, :]  # 取最後時間步的輸出
+        out = self.fc(out)
+        return self.activation(out)
+
+class LSTMPredictor:
+    def __init__(self, lookback_days=30, predict_days=10, lr=0.001, epochs=20):
+        self.lookback = lookback_days
+        self.predict_days = predict_days
+        self.scaler = MinMaxScaler()
+        self.model = LSTMModel()
+        self.epochs = epochs
+        self.lr = lr
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+
+    def preprocess(self, prices):
+        """
+        prices: DataFrame with ['date', 'close']
+        return: X (N, lookback, 1), y (N, 1)
+        """
+        prices = prices.copy()
+        scaled = self.scaler.fit_transform(prices[['close']])
+        X, y = [], []
+        for i in range(len(scaled) - self.lookback - self.predict_days):
+            seq_x = scaled[i:i+self.lookback]
+            future_avg = scaled[i+self.lookback:i+self.lookback+self.predict_days].mean()
+            current_price = scaled[i+self.lookback-1]
+            label = 1 if future_avg > current_price else -1
+            X.append(seq_x)
+            y.append([label])
+        return torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
+
+    def train(self, prices):
+        X, y = self.preprocess(prices)
+        dataset = TensorDataset(X, y)
+        loader = DataLoader(dataset, batch_size=16, shuffle=True)
+
+        self.model.train()
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        criterion = nn.MSELoss()
+
+        for epoch in range(self.epochs):
+            for xb, yb in loader:
+                xb, yb = xb.to(self.device), yb.to(self.device)
+                pred = self.model(xb)
+                loss = criterion(pred, yb)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+    def predict(self, recent_prices):
+        if len(recent_prices) < self.lookback:
+            return 0
+
+        self.model.eval()
+        prices = recent_prices.copy()
+        data = prices['close'].values[-self.lookback:]
+        data_scaled = self.scaler.transform(data.reshape(-1, 1))
+        input_tensor = torch.tensor(data_scaled.reshape(1, self.lookback, 1), dtype=torch.float32).to(self.device)
+
+        with torch.no_grad():
+            pred = self.model(input_tensor).item()
+
+        if pred > 0.1:
+            return 1
+        elif pred < -0.1:
+            return -1
+        else:
+            return 0
