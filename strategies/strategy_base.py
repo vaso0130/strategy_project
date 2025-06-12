@@ -1,9 +1,7 @@
 from abc import ABC, abstractmethod
 
 class Strategy(ABC):
-    """
-    策略基底類別，所有子策略都應繼承並實作 generate_signal 方法。
-    """
+    """策略基底類別，所有子策略都應繼承並實作 :func:`generate_signal`。"""
 
     def __init__(self, **params):
         self.params = params
@@ -20,7 +18,7 @@ class Strategy(ABC):
         """
         pass
 
-def generate_signals(self, price_df):
+    def generate_signals(self, price_df):
         """根據歷史資料逐步產生數值化的交易訊號序列。"""
         import pandas as pd
 

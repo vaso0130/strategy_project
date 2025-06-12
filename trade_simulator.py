@@ -49,7 +49,9 @@ class TradeSimulator:
                 self.position = self.cash // price
                 self.direction = 'long' if signal == 1 else 'short'
                 self.holding = True
-                self.cash -= self.position * price  # 扣除買進資金（放空不扣現金）
+                if self.direction == 'long':
+                    # 價格規則：做多時才扣除現金
+                    self.cash -= self.position * price
                 self.trades.append({
                     'entry_date': date,
                     'entry_price': price,
