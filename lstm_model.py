@@ -49,7 +49,10 @@ class LSTMPredictor:
             label = 1 if future_avg > current_price else -1
             X.append(seq_x)
             y.append([label])
-        return torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
+
+        X = np.array(X, dtype=np.float32)
+        y = np.array(y, dtype=np.float32)
+        return torch.from_numpy(X), torch.from_numpy(y)
 
     def train(self, prices):
         X, y = self.preprocess(prices)
