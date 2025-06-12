@@ -16,8 +16,8 @@ class BreakoutStrategy(Strategy):
         rsi = row["RSI"]
 
         window = self.params.get("window", 20)
-        rsi_high = self.params.get("rsi_high", 70)
-        rsi_low = self.params.get("rsi_low", 30)
+        rsi_high = self.params.get("rsi_high", 60)
+        rsi_low = self.params.get("rsi_low", 40)
         allow_short = self.params.get("allow_short", True)
 
         recent_high = data_slice["Close"].iloc[-window:].max()

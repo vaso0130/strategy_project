@@ -22,8 +22,8 @@ class VolumePriceStrategy(Strategy):
         rsi = row.get("RSI", 50)
 
         volume_threshold = self.params.get("volume_ratio", 1.5)
-        rsi_high = self.params.get("rsi_high", 70)
-        rsi_low = self.params.get("rsi_low", 30)
+        rsi_high = self.params.get("rsi_high", 60)
+        rsi_low = self.params.get("rsi_low", 40)
         allow_short = self.params.get("allow_short", True)
 
         # Volume spike
