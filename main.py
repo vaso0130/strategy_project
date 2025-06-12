@@ -61,7 +61,7 @@ while current_day <= pd.to_datetime(END_DATE):
     strategy = strategy_classes[selected_name]
 
     # 套用策略產出 signal
-    signals = strategy.generate_signals(past_df.append(today_row, ignore_index=True))
+    signals = strategy.generate_signals(pd.concat([past_df, today_row], ignore_index=True))
     today_signal = signals.iloc[-1] if len(signals) > 0 else 0
 
     # 建立當日資料與 signal
