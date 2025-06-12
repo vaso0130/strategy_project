@@ -2,8 +2,12 @@ import os
 import google.generativeai as genai
 
 # 初始化 Gemini Flash 模型
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-1.5-flash")
+API_KEY = os.getenv("GEMINI_API_KEY")
+if API_KEY:
+    genai.configure(api_key=API_KEY)
+    model = genai.GenerativeModel("gemini-1.5-flash")
+else:
+    model = None
 
 def format_strategy_metrics(strategy_metrics: dict) -> str:
     lines = []
@@ -31,6 +35,10 @@ LSTM 預測：{signal_text}
 
 請只回答策略名稱（例如：TrendStrategy），不要多加解釋。
 """
+
+    if model is None:
+        print("[警告] 未提供 GEMINI_API_KEY，已使用預設策略")
+        return list(strategy_metrics.keys())[0]
 
     try:
         response = model.generate_content(prompt)

@@ -15,7 +15,7 @@ real_start = (pd.to_datetime(START_DATE) - timedelta(days=LSTM_LOOKBACK_DAYS)).s
 df = load_price_data(symbol=STOCK_SYMBOL, start_date=real_start, end_date=END_DATE)
 
 # === 初始化元件 ===
-lstm = LSTMPredictor(lookback_days=LSTM_LOOKBACK_DAYS, predict_days=LSTM_PREDICT_DAYS)
+lstm = LSTMPredictor(lookback_days=LSTM_LOOKBACK_DAYS, predict_days=LSTM_PREDICT_DAYS, epochs=1)
 simulator = TradeSimulator(initial_capital=INITIAL_CAPITAL, stop_loss=STOP_LOSS_THRESHOLD, allow_short=ALLOW_SHORT_SELLING)
 strategy_classes = {
     "TrendStrategy": TrendStrategy(),
@@ -25,16 +25,41 @@ strategy_classes = {
 }
 
 # === 建立回測資料框架 ===
-df['date'] = pd.to_datetime(df['date'])
+# Yahoo Finance 下載的日期時間包含時區偏移，與我們以日期為單位的迴圈相比
+# 可能出現 00:00 與 01:00 的差異，導致找不到當天的資料。
+# 因此僅保留日期部分進行比對。
+df['date'] = pd.to_datetime(df['date']).dt.date
 df = df.sort_values("date").reset_index(drop=True)
+
+# 補上策略可能使用的欄位名稱與指標
+df["Close"] = df["close"]
+df["Volume"] = df["volume"]
+df["MA"] = df["Close"].rolling(window=20).mean()
+
+def compute_rsi(series, window=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0).rolling(window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+df["RSI"] = compute_rsi(df["Close"])
+
+# 於迴圈開始前嘗試以歷史資料訓練 LSTM，若資料不足則待迴圈中再訓練
+lstm_trained = False
+initial_train = df[df['date'] < pd.to_datetime(START_DATE).date()].tail(LSTM_TRAIN_WINDOW)
+if len(initial_train) >= LSTM_TRAIN_WINDOW:
+    lstm.train(initial_train)
+    lstm_trained = True
+
 daily_results = []
 trade_logs = []
 
 # === 主流程 ===
-current_day = pd.to_datetime(START_DATE)
+current_day = pd.to_datetime(START_DATE).date()
 retrain_day = current_day
 
-while current_day <= pd.to_datetime(END_DATE):
+while current_day <= pd.to_datetime(END_DATE).date():
     past_df = df[df['date'] < current_day]
     today_row = df[df['date'] == current_day]
 
@@ -42,15 +67,17 @@ while current_day <= pd.to_datetime(END_DATE):
         current_day += timedelta(days=1)
         continue
 
-    # retrain LSTM 模型
-    if (current_day - retrain_day).days >= LSTM_RETRAIN_INTERVAL:
-        train_data = past_df.tail(LSTM_TRAIN_WINDOW) 
+    # retrain LSTM 模型（首次資料足夠時亦在此訓練）
+    if len(past_df) >= LSTM_TRAIN_WINDOW and \
+       ((not lstm_trained) or (current_day - retrain_day).days >= LSTM_RETRAIN_INTERVAL):
+        train_data = past_df.tail(LSTM_TRAIN_WINDOW)
         lstm.train(train_data)
         retrain_day = current_day
+        lstm_trained = True
 
     # 預測未來走勢
     recent_data = past_df.tail(LSTM_LOOKBACK_DAYS)
-    lstm_signal = lstm.predict(recent_data)
+    lstm_signal = lstm.predict(recent_data) if lstm_trained else 0
 
     # 判斷市場狀態
     regime = calculate_market_regime(past_df.tail(60))
@@ -61,8 +88,12 @@ while current_day <= pd.to_datetime(END_DATE):
     strategy = strategy_classes[selected_name]
 
     # 套用策略產出 signal
-    concat_df = pd.concat([past_df, today_row], ignore_index=True)
-    signals = strategy.generate_signals(concat_df)
+    signals = strategy.generate_signals(past_df.append(today_row, ignore_index=True))
+    # 將 LSTM 預測結果附加到今日資料供策略參考
+    today_row = today_row.copy()
+    pred_text = {1: "up", -1: "down"}.get(lstm_signal)
+    today_row["Prediction"] = pred_text
+    signals = strategy.generate_signals(pd.concat([past_df, today_row], ignore_index=True))
     today_signal = signals.iloc[-1] if len(signals) > 0 else 0
 
     # 建立當日資料與 signal
