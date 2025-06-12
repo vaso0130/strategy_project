@@ -71,6 +71,11 @@ LSTM 預測：{signal_text}
             request_options={"timeout": 10, "retry": no_retry},
         )
         response_text = response.text.strip()
+        # 處理 Gemini 可能回傳的 "json\n{...}" 或多餘換行
+        if response_text.lower().startswith("json"):
+            response_text = response_text[4:].strip()
+        # 移除多餘換行
+        response_text = response_text.strip("` \n")
         try:
             result = json.loads(response_text)
             if (

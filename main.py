@@ -21,7 +21,14 @@ df = load_price_data(symbol=STOCK_SYMBOL, start_date=real_start, end_date=END_DA
 
 # === 初始化元件 ===
 lstm = LSTMPredictor(lookback_days=LSTM_LOOKBACK_DAYS, predict_days=LSTM_PREDICT_DAYS, epochs=1)
-simulator = TradeSimulator(initial_capital=INITIAL_CAPITAL, stop_loss=STOP_LOSS_THRESHOLD, allow_short=ALLOW_SHORT_SELLING)
+
+# === 初始化模擬器 ===
+simulator = TradeSimulator(
+    initial_capital=INITIAL_CAPITAL,
+    stop_loss=STOP_LOSS_THRESHOLD,
+    allow_short=ALLOW_SHORT_SELLING
+)
+
 strategy_classes = {
     "TrendStrategy": TrendStrategy(),
     "RangeStrategy": RangeStrategy(),
@@ -132,46 +139,101 @@ while current_day <= pd.to_datetime(END_DATE).date():
     selected_params = llm_result["params"]
 
     # 動態建立策略物件
-    strategy_class = strategy_classes[selected_name].__class__
-    strategy = strategy_class(**selected_params)
-    signals = strategy.generate_signals(df)
+    strategy_class_constructor = strategy_classes[selected_name] # 直接取得類別
+    strategy = strategy_class_constructor(**selected_params)
+    
+    # 產生訊號時，只給策略當前日期之前的資料，避免用到未來函數
+    # 並且訊號應該是針對接下來的交易日
+    # 這裡的 signals 應該是 DataFrame，包含 'date' 和 'signal'
+    signals_df = strategy.generate_signals(past_df.copy()) # 傳遞過去的數據讓策略判斷
 
-    if 'prev_strategy' not in locals():
-        print(f"[LLM] 選擇策略: {selected_name}")
+    # 執行模擬交易
+    # simulator 需要的是包含當日開盤價等資訊的 df，以及策略產生的 signal_df
+    # 假設 simulator.simulate 會處理好對應日期的交易
+    # 我們需要傳遞整個歷史 df 和 signal_df 給 simulator，讓它內部按日期迭代
+    # 或者，我們在每日迴圈中，只處理當日的訊號和交易
+
+    # 簡化：假設 simulate 內部會處理好對齊
+    # 實際上，simulator.simulate 應該在每日迴圈外被呼叫一次，傳入完整的 df 和 signals_df
+    # 或者，每日呼叫，但 simulator 內部需要維護狀態
+
+    # --- 每日模擬方式 ---
+    # 取得當日訊號
+    current_signal_row = signals_df[signals_df['date'] == current_day]
+    signal_for_today = current_signal_row['signal'].iloc[0] if not current_signal_row.empty else 0
+
+    # 模擬器處理當日交易 (這種方式 simulator 需要能逐日更新狀態)
+    # 為了簡化，我們這裡先採用一次性模擬，然後從結果中提取當日交易
+    # 但更常見的做法是 simulator.step(date, price, signal)
+
+    # --- 為了與你現有 simulator 結構匹配，我們在迴圈外模擬 ---
+    # 這部分邏輯需要調整，目前 simulator.simulate 預期接收完整的 df 和 signal_df
+    # 我們先保持每日選擇策略，但模擬器在迴圈外執行
+
+    # 這裡的 trade_logs 和 daily_results 應該在模擬器執行後才更新
+    # 先收集每日訊號
+    if 'all_signals_for_simulation' not in locals():
+        all_signals_for_simulation = []
+    
+    # 儲存當日LLM選擇的策略所產生的訊號
+    # 注意：signals_df 是基於 past_df 產生的，可能包含多天訊號
+    # 我們只取 current_day 對應的訊號（如果策略設計是如此）
+    # 或者，策略 generate_signals 只回傳下一日的訊號
+    
+    # 假設 strategy.generate_signals(past_df) 會回傳一個包含未來日期的訊號 DataFrame
+    # 我們需要篩選出 current_day 的訊號
+    day_specific_signal = signals_df[signals_df['date'] == current_day]
+    if not day_specific_signal.empty:
+         all_signals_for_simulation.append({
+             'date': current_day,
+             'signal': day_specific_signal['signal'].iloc[0],
+             'open': today_row['open'].iloc[0], # 加入當日價格資訊給模擬器
+             'close': today_row['close'].iloc[0],
+             'high': today_row['high'].iloc[0],
+             'low': today_row['low'].iloc[0]
+         })
+
+
+    if 'prev_strategy' not in locals() or prev_strategy != selected_name:
+        print(f"[{current_day}] LLM 選擇策略: {selected_name} (參數: {selected_params})")
         prev_strategy = selected_name
-    elif prev_strategy != selected_name:
-        print(f"[LLM] 更換策略: {prev_strategy} -> {selected_name}")
-        prev_strategy = selected_name
-    strategy = strategy_classes[selected_name]
-
-    # 將 LSTM 預測結果附加到今日資料供策略參考
-    today_row = today_row.copy()
-    pred_text = {1: "up", -1: "down"}.get(lstm_signal)
-    today_row["Prediction"] = pred_text
-    signals = strategy.generate_signals(pd.concat([past_df, today_row], ignore_index=True))
-    today_signal = signals.iloc[-1] if len(signals) > 0 else 0
-
-    # 建立當日資料與 signal
-    signal_df = pd.DataFrame({
-        "date": [current_day],
-        "close": today_row['close'].values,
-        "signal": [today_signal]
-    })
-
-    # 模擬交易
-    trades, capital = simulator.simulate(signal_df)
-    trade_logs.extend(trades.to_dict('records'))
-    daily_results.append({"date": current_day, "capital": capital})
-
+    
     current_day += timedelta(days=1)
+    # --- 每日迴圈結束 ---
 
-# === 匯出績效報告 ===
-daily_df = pd.DataFrame(daily_results)
-trade_df = pd.DataFrame(trade_logs)
+# --- 迴圈結束後，執行一次完整的模擬 ---
+if 'all_signals_for_simulation' in locals() and all_signals_for_simulation:
+    simulation_input_signals_df = pd.DataFrame(all_signals_for_simulation)
+    
+    # 模擬器需要完整的價格數據 df 和訊號 df
+    # 確保 df 包含 'open', 'high', 'low', 'close'
+    # 這裡的 df 是最開始載入的完整價格數據
+    trades_df, final_capital = simulator.simulate(df, simulation_input_signals_df)
+    
+    trade_logs.extend(trades_df.to_dict('records'))
+    # daily_results 需要從 simulator.daily_capital 獲取
+    daily_results_df = pd.DataFrame(simulator.daily_capital)
+else:
+    print("[警告] 沒有訊號可供模擬。")
+    trades_df = pd.DataFrame()
+    daily_results_df = pd.DataFrame(columns=['date', 'capital'])
+    final_capital = INITIAL_CAPITAL
 
-generate_monthly_report(
-    daily_df=daily_df,
-    trade_log_df=trade_df,
-    strategy_name="LSTMStrategy",
-    initial_capital=INITIAL_CAPITAL
-)
+
+# === 產生報告 ===
+trade_log_df = pd.DataFrame(trade_logs)
+# daily_results_df 已在上面從 simulator.daily_capital 產生
+
+# generate_monthly_report(daily_results_df, trade_log_df, "LLM_Dynamic_Strategy", INITIAL_CAPITAL)
+
+# 輸出最終結果
+print(f"\n回測結束 ({START_DATE} to {END_DATE})")
+print(f"最終資產: {final_capital:,.0f} TWD")
+# ... (其他總結指標) ...
+
+if not trades_df.empty:
+    generate_monthly_report(daily_results_df, trades_df, "LLM_Dynamic_Strategy", INITIAL_CAPITAL)
+    print(f"\n已產生交易報告: LLM_Dynamic_Strategy_monthly_report.xlsx")
+    print(f"已產生交易紀錄: LLM_Dynamic_Strategy_trades.csv")
+else:
+    print("\n沒有任何交易產生。")

@@ -1,7 +1,7 @@
 import pandas as pd
 
 class TradeSimulator:
-    def __init__(self, initial_capital=1000000, stop_loss=0.08, allow_short=True):
+    def __init__(self, initial_capital: int, stop_loss: float, allow_short: bool):
         self.initial_capital = initial_capital
         self.stop_loss = stop_loss
         self.allow_short = allow_short
@@ -9,69 +9,126 @@ class TradeSimulator:
 
     def reset(self):
         self.cash = self.initial_capital
-        self.position = 0
+        self.position = 0  # 持有股數
         self.entry_price = 0
         self.trades = []
         self.holding = False
         self.direction = None  # 'long' or 'short'
+        self.daily_capital = [] # 用於記錄每日資產
 
-    def simulate(self, df):
+    def simulate(self, df: pd.DataFrame, signal_df: pd.DataFrame):
         """
-        df 需包含 ['date', 'close', 'signal'] 欄位
-        signal: 1=做多, -1=放空, 0=觀望
+        模擬交易過程
+
+        Args:
+            df (pd.DataFrame): 包含 'date', 'open', 'high', 'low', 'close' 的市場數據
+            signal_df (pd.DataFrame): 包含 'date', 'signal' 的交易訊號，
+                                     signal: 1 (買入), -1 (賣出/放空), 0 (平倉/觀望)
+        Returns:
+            pd.DataFrame: 交易紀錄
+            float: 最終資產
         """
-        for i, row in df.iterrows():
-            date = row['date']
-            price = row['close']
+        self.reset()
+        if df.empty or signal_df.empty:
+            return pd.DataFrame(self.trades), self.initial_capital
+
+        # 合併市場數據與訊號，確保日期對齊
+        merged_df = pd.merge(df, signal_df, on='date', how='left').fillna(0)
+
+        for i, row in merged_df.iterrows():
+            current_date = row['date']
+            current_price = row['open'] # 假設以開盤價交易
             signal = row['signal']
 
-            # 平倉條件：停損或反向訊號
+            # 停損檢查 (簡易版，可再優化)
             if self.holding:
-                change = (price - self.entry_price) / self.entry_price
-                if self.direction == 'short':
-                    change = -change
-                if change <= -self.stop_loss or (signal != 0 and signal != (1 if self.direction == 'long' else -1)):
-                    pnl = (price - self.entry_price) * self.position if self.direction == 'long' else (self.entry_price - price) * self.position
-                    self.cash += pnl
+                if self.direction == 'long' and current_price < self.entry_price * (1 - self.stop_loss):
+                    signal = 0 # 觸發停損，強制平倉
+                    # print(f"{current_date} Long Stop Loss triggered at {current_price}")
+                elif self.direction == 'short' and current_price > self.entry_price * (1 + self.stop_loss):
+                    signal = 0 # 觸發停損，強制平倉
+                    # print(f"{current_date} Short Stop Loss triggered at {current_price}")
+
+
+            if signal == 1 and not self.holding: # 買入訊號且未持倉
+                self.position = self.cash // current_price
+                if self.position > 0:
+                    self.cash -= self.position * current_price
+                    self.entry_price = current_price
+                    self.holding = True
+                    self.direction = 'long'
                     self.trades.append({
-                        'entry_date': None,
-                        'entry_price': None,
-                        'exit_date': date,
-                        'exit_price': price,
-                        'pnl': pnl,
-                        'side': self.direction
+                        "entry_date": current_date, "exit_date": None,
+                        "entry_price": current_price, "exit_price": None,
+                        "side": "long", "pnl": None, "shares": self.position
                     })
-                    self.position = 0
-                    self.holding = False
-                    self.direction = None
-
-            # 開倉條件
-            if not self.holding and signal != 0:
-                self.entry_price = price
-                self.position = self.cash // price
-                self.direction = 'long' if signal == 1 else 'short'
-                self.holding = True
+            elif signal == -1 and self.allow_short and not self.holding : # 放空訊號且允許放空且未持倉
+                self.position = self.cash // current_price # 假設以等值現金放空
+                if self.position > 0:
+                    # 放空時，現金增加 (保證金概念簡化)
+                    # self.cash += self.position * current_price # 實際券商操作更複雜
+                    self.entry_price = current_price
+                    self.holding = True
+                    self.direction = 'short'
+                    self.trades.append({
+                        "entry_date": current_date, "exit_date": None,
+                        "entry_price": current_price, "exit_price": None,
+                        "side": "short", "pnl": None, "shares": self.position
+                    })
+            elif signal == 0 and self.holding: # 平倉訊號且持倉
+                last_trade = self.trades[-1]
+                last_trade["exit_date"] = current_date
+                last_trade["exit_price"] = current_price
+                
                 if self.direction == 'long':
-                    self.cash -= self.position * price
-                self.trades.append({
-                    'entry_date': date,
-                    'entry_price': price,
-                    'exit_date': None,
-                    'exit_price': None,
-                    'pnl': None,
-                    'side': self.direction
-                })
+                    self.cash += self.position * current_price
+                    pnl = (current_price - self.entry_price) * self.position
+                elif self.direction == 'short':
+                    # 空單回補，現金減少買回成本，獲利為 (賣出價 - 回補價) * 股數
+                    self.cash -= self.position * current_price # 回補成本
+                    self.cash += self.position * self.entry_price # 初始賣空收入 (簡化模型)
+                    pnl = (self.entry_price - current_price) * self.position
+                
+                last_trade["pnl"] = pnl
+                self.position = 0
+                self.entry_price = 0
+                self.holding = False
+                self.direction = None
 
-        # 強制平倉最後一天
-        if self.holding:
-            final_price = df.iloc[-1]['close']
-            pnl = (final_price - self.entry_price) * self.position if self.direction == 'long' else (self.entry_price - final_price) * self.position
-            self.cash += pnl
-            self.trades[-1]['exit_date'] = df.iloc[-1]['date']
-            self.trades[-1]['exit_price'] = final_price
-            self.trades[-1]['pnl'] = pnl
+            # 記錄每日資產
+            current_total_value = self.cash
+            if self.holding and self.direction == 'long':
+                current_total_value += self.position * row['close'] # 以收盤價計算當日持有價值
+            elif self.holding and self.direction == 'short':
+                 # 空單的市值計算較複雜，簡化為：初始賣空所得 + (初始賣空價 - 現價) * 股數
+                current_total_value += (self.position * self.entry_price) + (self.entry_price - row['close']) * self.position
 
-        return pd.DataFrame(self.trades), self.cash
+            self.daily_capital.append({'date': current_date, 'capital': current_total_value})
+
+        # 處理期末仍持倉的情況 (以最後一天收盤價平倉)
+        if self.holding and not merged_df.empty:
+            last_row = merged_df.iloc[-1]
+            last_trade = self.trades[-1]
+            last_trade["exit_date"] = last_row['date']
+            last_trade["exit_price"] = last_row['close'] # 以最後一天收盤價平倉
+
+            if self.direction == 'long':
+                self.cash += self.position * last_row['close']
+                pnl = (last_row['close'] - self.entry_price) * self.position
+            elif self.direction == 'short':
+                self.cash -= self.position * last_row['close']
+                self.cash += self.position * self.entry_price
+                pnl = (self.entry_price - last_row['close']) * self.position
+            
+            last_trade["pnl"] = pnl
+            self.position = 0
+            # 更新最後一天的資產
+            if self.daily_capital:
+                 self.daily_capital[-1]['capital'] = self.cash
+
+
+        trades_df = pd.DataFrame(self.trades)
+        return trades_df, self.cash # 回傳交易紀錄和最終現金
 
     def calculate_metrics(self, trades_df):
         # 若 'pnl' 欄位不存在則補上
