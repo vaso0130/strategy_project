@@ -34,6 +34,8 @@ class TradeSimulator:
                     pnl = (price - self.entry_price) * self.position if self.direction == 'long' else (self.entry_price - price) * self.position
                     self.cash += pnl
                     self.trades.append({
+                        'entry_date': None,
+                        'entry_price': None,
                         'exit_date': date,
                         'exit_price': price,
                         'pnl': pnl,
@@ -50,11 +52,13 @@ class TradeSimulator:
                 self.direction = 'long' if signal == 1 else 'short'
                 self.holding = True
                 if self.direction == 'long':
-                    # 價格規則：做多時才扣除現金
                     self.cash -= self.position * price
                 self.trades.append({
                     'entry_date': date,
                     'entry_price': price,
+                    'exit_date': None,
+                    'exit_price': None,
+                    'pnl': None,
                     'side': self.direction
                 })
 
@@ -70,6 +74,9 @@ class TradeSimulator:
         return pd.DataFrame(self.trades), self.cash
 
     def calculate_metrics(self, trades_df):
+        # 若 'pnl' 欄位不存在則補上
+        if 'pnl' not in trades_df.columns:
+            trades_df['pnl'] = None
         total_return = (self.cash - self.initial_capital) / self.initial_capital
         total_trades = len(trades_df[trades_df['pnl'].notnull()])
         win_trades = trades_df[trades_df['pnl'] > 0]
