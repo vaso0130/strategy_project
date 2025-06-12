@@ -11,7 +11,11 @@ from strategies import *  # 匯入所有策略類別
 from datetime import timedelta
 
 # === 載入資料 ===
-real_start = (pd.to_datetime(START_DATE) - timedelta(days=LSTM_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+# 下載更久以前的資料以確保 LSTM 能取得足夠的訓練樣本
+real_start = (
+    pd.to_datetime(START_DATE)
+    - timedelta(days=LSTM_TRAIN_WINDOW + LSTM_LOOKBACK_DAYS)
+).strftime("%Y-%m-%d")
 df = load_price_data(symbol=STOCK_SYMBOL, start_date=real_start, end_date=END_DATE)
 
 # === 初始化元件 ===
