@@ -10,6 +10,7 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 if API_KEY:
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel("gemini-1.5-flash")
+    print("[資訊] 已成功初始化 Gemini 1.5 Flash 模型")
 else:
     model = None
 
