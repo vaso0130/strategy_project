@@ -36,6 +36,17 @@ class StrategyOptimizer:
             trades, _ = sim.simulate(temp_df)
             metrics = sim.calculate_metrics(trades)
 
+            # 計算每日策略報酬以評估 Sharpe Ratio
+            returns = temp_df['close'].pct_change().fillna(0)
+            positions = signals.shift().fillna(0)
+            strat_returns = returns * positions
+            sharpe = (
+                strat_returns.mean() / strat_returns.std() * np.sqrt(252)
+                if strat_returns.std() != 0
+                else 0
+            )
+            metrics['sharpe'] = sharpe
+
             score = self.evaluator(metrics)
             if score > best_score:
                 best_score = score
