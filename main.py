@@ -7,6 +7,7 @@ from llm_decision_engine import select_strategy
 from trade_simulator import TradeSimulator
 from utils.metrics import generate_monthly_report
 from strategies import *  # 匯入所有策略類別
+from optimizer import StrategyOptimizer
 
 from datetime import timedelta
 
@@ -28,6 +29,7 @@ strategy_classes = {
     "VolumePriceStrategy": VolumePriceStrategy()
 }
 
+
 # === 建立回測資料框架 ===
 # Yahoo Finance 下載的日期時間包含時區偏移，與我們以日期為單位的迴圈相比
 # 可能出現 00:00 與 01:00 的差異，導致找不到當天的資料。
@@ -48,6 +50,35 @@ def compute_rsi(series, window=14):
     return 100 - (100 / (1 + rs))
 
 df["RSI"] = compute_rsi(df["Close"])
+
+# === 策略參數優化 ===
+if ENABLE_STRATEGY_OPTIMIZATION:
+    param_grids = {
+        "TrendStrategy": {"rsi_low": [30, 40], "rsi_high": [60, 70]},
+        "RangeStrategy": {"rsi_low": [30, 40], "rsi_high": [60, 70]},
+        "BreakoutStrategy": {"window": [15, 20]},
+        "VolumePriceStrategy": {"volume_ratio": [1.5, 2.0]},
+    }
+
+    eval_map = {
+        "win_rate": lambda m: m["win_rate"],
+        "total_return": lambda m: m["total_return"],
+        "sharpe": lambda m: m.get("sharpe", 0),
+    }
+    evaluator = eval_map.get(STRATEGY_EVALUATOR, lambda m: m.get("sharpe", 0))
+    pre_start = df[df["date"] < pd.to_datetime(START_DATE).date()]
+
+    optimized = {}
+    for name, strat in strategy_classes.items():
+        grid = param_grids.get(name)
+        if grid:
+            opt = StrategyOptimizer(type(strat), grid, evaluator)
+            result = opt.optimize(pre_start)
+            best = result.get("best_params") or {}
+            optimized[name] = type(strat)(**best)
+        else:
+            optimized[name] = strat
+    strategy_classes = optimized
 
 # 於迴圈開始前嘗試以歷史資料訓練 LSTM，若資料不足則待迴圈中再訓練
 lstm_trained = False
