@@ -2,6 +2,7 @@ import os
 import google.generativeai as genai
 from google.api_core import retry
 from dotenv import load_dotenv
+import json
 
 # 載入環境變數
 load_dotenv()
@@ -24,21 +25,26 @@ def format_strategy_metrics(strategy_metrics: dict) -> str:
         lines.append(line)
     return "\n".join(lines)
 
-def select_strategy(market_regime: str, lstm_signal: int, strategy_metrics: dict) -> str:
+def select_strategy_and_params(market_regime: str, lstm_signal: int, strategy_metrics: dict, param_grids: dict) -> dict:
     """
-    使用 Gemini 1.5 Flash 判斷最適策略。失敗時會 fallback 回預設策略。
+    請 Gemini 直接建議「策略名稱+參數組合」。
+    回傳格式: {"strategy": "TrendStrategy", "params": {"rsi_low": 40, "rsi_high": 70}}
     """
     strategy_text = format_strategy_metrics(strategy_metrics)
     signal_text = {1: "預測上漲", -1: "預測下跌", 0: "無明確趨勢"}.get(lstm_signal, "無明確趨勢")
     valid_strategies = list(strategy_metrics.keys())
-    strategy_list = "\n".join(f"- {s}" for s in valid_strategies)
+    param_text = "\n".join(
+        f"{name} 可調參數: {list(param_grids.get(name, {}).keys())}" for name in valid_strategies
+    )
 
     prompt = f"""
-你是一位專業的量化交易顧問，請根據以下市場資訊，**只從下列清單中挑選一個最適合的策略名稱**。請注意：
+你是一位專業的量化交易顧問，請根據以下市場資訊，直接建議一組「策略名稱」與「參數組合」。
+請嚴格按照以下格式回覆（不要多加說明）：
 
-- 請只回覆清單中的一個「策略名稱」
-- 請不要多加說明或額外語句
-- 請不要回答「無法判斷」、「建議觀望」等語句
+{{
+  "strategy": "策略名稱（只能從下列清單選一個）",
+  "params": {{參數名稱: 數值, ...}}
+}}
 
 市場型態：{market_regime}
 LSTM 預測：{signal_text}
@@ -46,15 +52,17 @@ LSTM 預測：{signal_text}
 可選策略與績效如下：
 {strategy_text}
 
-請從以下策略中選出一個最適合的（只能選一個）：
-{strategy_list}
+各策略可調參數如下：
+{param_text}
 
-請只回答策略名稱，例如：TrendStrategy
+請只回覆一組 JSON 格式（不要多加說明），例如：
+{{"strategy": "TrendStrategy", "params": {{"rsi_low": 40, "rsi_high": 70}}}}
 """
 
     if model is None:
         print("[警告] 未提供 GEMINI_API_KEY，已使用預設策略")
-        return valid_strategies[0]
+        default_strategy = valid_strategies[0]
+        return {"strategy": default_strategy, "params": {k: v[0] for k, v in param_grids.get(default_strategy, {}).items()}}
 
     try:
         no_retry = retry.Retry(predicate=lambda exc: False)
@@ -63,13 +71,21 @@ LSTM 預測：{signal_text}
             request_options={"timeout": 10, "retry": no_retry},
         )
         response_text = response.text.strip()
-
-        if response_text in valid_strategies:
-            return response_text
-        else:
-            print(f"[警告] Gemini 回傳無效策略名稱：{response_text}，已使用預設策略")
-            return valid_strategies[0]  # fallback 預設策略
-
+        try:
+            result = json.loads(response_text)
+            if (
+                isinstance(result, dict)
+                and "strategy" in result
+                and result["strategy"] in valid_strategies
+                and isinstance(result.get("params", {}), dict)
+            ):
+                return result
+        except Exception:
+            pass
+        print(f"[警告] Gemini 回傳無效格式：{response_text}，已使用預設策略")
+        default_strategy = valid_strategies[0]
+        return {"strategy": default_strategy, "params": {k: v[0] for k, v in param_grids.get(default_strategy, {}).items()}}
     except Exception as e:
         print(f"[錯誤] Gemini API 呼叫失敗：{e}")
-        return valid_strategies[0]  # fallback 預設策略
+        default_strategy = valid_strategies[0]
+        return {"strategy": default_strategy, "params": {k: v[0] for k, v in param_grids.get(default_strategy, {}).items()}}

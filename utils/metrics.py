@@ -56,7 +56,7 @@ def generate_monthly_report(
     # 合併績效與交易統計
     report = pd.merge(perf.reset_index(drop=True), stats, on="月份", how="left")
     report["當月交易次數"] = report["當月交易次數"].fillna(0).astype(int)
-    report["當月勝率"] = report["當月勝率"].fillna(0)
+    report["當月勝率"] = report["當月勝率"].fillna(0).astype(float)
 
     # === 總體統計 ===
     total_trades = len(trade_log_df)

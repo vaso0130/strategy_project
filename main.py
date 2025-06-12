@@ -3,7 +3,7 @@ from config import *
 from data_loader import load_price_data
 from lstm_model import LSTMPredictor
 from market_regime import calculate_market_regime
-from llm_decision_engine import select_strategy
+from llm_decision_engine import select_strategy_and_params
 from trade_simulator import TradeSimulator
 from utils.metrics import generate_monthly_report
 from strategies import *  # 匯入所有策略類別
@@ -125,7 +125,17 @@ while current_day <= pd.to_datetime(END_DATE).date():
 
     # 計算每個策略的績效（這裡可換成真績效，先用空值）
     dummy_metrics = {name: {"sharpe": 0.5, "win_rate": 0.6, "bias": 1} for name in strategy_classes}
-    selected_name = select_strategy(regime, lstm_signal, dummy_metrics)
+    
+    # 讓 LLM 選策略＋參數
+    llm_result = select_strategy_and_params(regime, lstm_signal, dummy_metrics, param_grids)
+    selected_name = llm_result["strategy"]
+    selected_params = llm_result["params"]
+
+    # 動態建立策略物件
+    strategy_class = strategy_classes[selected_name].__class__
+    strategy = strategy_class(**selected_params)
+    signals = strategy.generate_signals(df)
+
     if 'prev_strategy' not in locals():
         print(f"[LLM] 選擇策略: {selected_name}")
         prev_strategy = selected_name
