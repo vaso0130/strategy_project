@@ -6,3 +6,4 @@ yfinance
 scikit-learn
 torch
 google-generativeai
+python-dotenv

@@ -11,16 +11,12 @@ tactics with a Gemini LLM based decision engine.
    pip install -r requirements.txt
    ```
    The packages include `pandas`, `numpy`, `requests`, `openpyxl`, `yfinance`,
-   `scikit-learn`, `torch` and `google-generativeai`.
+   `scikit-learn`, `torch` and `google-generativeai` ,`python-dotenv`.
 
 ## GEMINI_API_KEY
-
-The LLM decision engine relies on the Gemini API. Set the API key in your
-environment before running the program:
-
-```bash
-export GEMINI_API_KEY="your-api-key"
-```
+新增.env
+寫入
+GEMINI_API_KEY=you_key
 
 ## Running the Example
 

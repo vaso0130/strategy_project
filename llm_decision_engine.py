@@ -1,5 +1,9 @@
 import os
 import google.generativeai as genai
+from dotenv import load_dotenv
+
+# 載入環境變數
+load_dotenv()
 
 # 初始化 Gemini Flash 模型
 API_KEY = os.getenv("GEMINI_API_KEY")
