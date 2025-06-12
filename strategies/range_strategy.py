@@ -18,8 +18,8 @@ class RangeStrategy(Strategy):
         # 從參數取得支撐/壓力區間
         support = self.params.get("support", row["Close"] * 0.95)
         resistance = self.params.get("resistance", row["Close"] * 1.05)
-        rsi_low = self.params.get("rsi_low", 40)
-        rsi_high = self.params.get("rsi_high", 60)
+        rsi_low = self.params.get("rsi_low", 50)
+        rsi_high = self.params.get("rsi_high", 70)
         allow_short = self.params.get("allow_short", True)
 
         if position is None:

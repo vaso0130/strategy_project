@@ -18,8 +18,8 @@ class TrendStrategy(Strategy):
         rsi = row["RSI"]
 
         # 放寬 RSI 門檻以增加交易機會
-        rsi_low = self.params.get("rsi_low", 40)
-        rsi_high = self.params.get("rsi_high", 60)
+        rsi_low = self.params.get("rsi_low", 50)
+        rsi_high = self.params.get("rsi_high", 70)
         allow_short = self.params.get("allow_short", True)
 
         if position is None:
