@@ -53,9 +53,14 @@ df["RSI"] = compute_rsi(df["Close"])
 
 # === 策略參數優化 ===
 if ENABLE_STRATEGY_OPTIMIZATION:
+    print("[資訊] 啟用策略參數優化")
     param_grids = {
         "TrendStrategy": {"rsi_low": [30, 40], "rsi_high": [60, 70]},
-        "RangeStrategy": {"rsi_low": [30, 40], "rsi_high": [60, 70]},
+        "RangeStrategy": {
+            "window": [10, 20],
+            "rsi_low": [45, 50],
+            "rsi_high": [65, 70],
+        },
         "BreakoutStrategy": {"window": [15, 20]},
         "VolumePriceStrategy": {"volume_ratio": [1.5, 2.0]},
     }
@@ -76,6 +81,7 @@ if ENABLE_STRATEGY_OPTIMIZATION:
             result = opt.optimize(pre_start)
             best = result.get("best_params") or {}
             optimized[name] = type(strat)(**best)
+            print(f"[優化] {name} 最佳參數: {best}")
         else:
             optimized[name] = strat
     strategy_classes = optimized
@@ -120,6 +126,12 @@ while current_day <= pd.to_datetime(END_DATE).date():
     # 計算每個策略的績效（這裡可換成真績效，先用空值）
     dummy_metrics = {name: {"sharpe": 0.5, "win_rate": 0.6, "bias": 1} for name in strategy_classes}
     selected_name = select_strategy(regime, lstm_signal, dummy_metrics)
+    if 'prev_strategy' not in locals():
+        print(f"[LLM] 選擇策略: {selected_name}")
+        prev_strategy = selected_name
+    elif prev_strategy != selected_name:
+        print(f"[LLM] 更換策略: {prev_strategy} -> {selected_name}")
+        prev_strategy = selected_name
     strategy = strategy_classes[selected_name]
 
     # 將 LSTM 預測結果附加到今日資料供策略參考

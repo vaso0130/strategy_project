@@ -15,9 +15,16 @@ class RangeStrategy(Strategy):
         close = row["Close"]
         rsi = row["RSI"]
 
-        # 從參數取得支撐/壓力區間
-        support = self.params.get("support", row["Close"] * 0.95)
-        resistance = self.params.get("resistance", row["Close"] * 1.05)
+        # 從參數取得支撐/壓力區間，若未指定則使用近 N 日高低點
+        window = self.params.get("window", 20)
+        support = self.params.get(
+            "support",
+            data_slice["Close"].rolling(window=window).min().iloc[-1],
+        )
+        resistance = self.params.get(
+            "resistance",
+            data_slice["Close"].rolling(window=window).max().iloc[-1],
+        )
         rsi_low = self.params.get("rsi_low", 50)
         rsi_high = self.params.get("rsi_high", 70)
         allow_short = self.params.get("allow_short", True)
