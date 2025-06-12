@@ -26,7 +26,7 @@ class StrategyOptimizer:
 
         for params in self.generate_param_combinations():
             strategy = self.strategy_class(**params)
-            signals = strategy.generate_signals(price_df.copy())
+            signals = strategy.generate_signals(price_df)
 
             # 假設 price_df 中已有 'date' 和 'close'
             temp_df = price_df.copy()
