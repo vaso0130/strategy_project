@@ -2,5 +2,4 @@ __pycache__/
 *.pyc
 strategies/__pycache__/
 utils/__pycache__/
-.env
 0050_LSTMStrategy_monthly_report.xlsx
