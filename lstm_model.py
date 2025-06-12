@@ -88,9 +88,10 @@ class LSTMPredictor:
         with torch.no_grad():
             pred = self.model(input_tensor).item()
 
-        if pred > 0.1:
+        # 降低判定門檻讓 up/down 訊號更容易出現
+        if pred > 0.05:
             return 1
-        elif pred < -0.1:
+        elif pred < -0.05:
             return -1
         else:
             return 0

@@ -17,14 +17,16 @@ class TrendStrategy(Strategy):
         ma = row["MA"]
         rsi = row["RSI"]
 
-        rsi_low = self.params.get("rsi_low", 30)
-        rsi_high = self.params.get("rsi_high", 70)
+        # 放寬 RSI 門檻以增加交易機會
+        rsi_low = self.params.get("rsi_low", 40)
+        rsi_high = self.params.get("rsi_high", 60)
         allow_short = self.params.get("allow_short", True)
 
         if position is None:
-            if prediction == "up" and close > ma and rsi < rsi_low:
+            # 在無預測時亦可依技術指標進場
+            if (prediction == "up" or prediction is None) and close > ma and rsi < rsi_low:
                 return "Buy"
-            elif prediction == "down" and close < ma and rsi > rsi_high and allow_short:
+            elif allow_short and (prediction == "down" or prediction is None) and close < ma and rsi > rsi_high:
                 return "Short"
 
         elif position == "Long":
