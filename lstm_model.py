@@ -77,7 +77,9 @@ class LSTMPredictor:
         self.model.eval()
         prices = recent_prices.copy()
         data = prices['close'].values[-self.lookback:]
-        data_scaled = self.scaler.transform(data.reshape(-1, 1))
+        data_scaled = self.scaler.transform(
+            pd.DataFrame(data.reshape(-1, 1), columns=['close'])
+        )
         input_tensor = torch.tensor(data_scaled.reshape(1, self.lookback, 1), dtype=torch.float32).to(self.device)
 
         with torch.no_grad():
