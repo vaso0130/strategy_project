@@ -63,6 +63,7 @@ python main.py
 - 回測起訖日期
 - 股票代碼（預設為台灣 0050）
 - 策略選擇與評估依據（如夏普值、勝率、報酬率）
+- 是否啟用策略參數優化（`ENABLE_STRATEGY_OPTIMIZATION`）
 
 ---
 
