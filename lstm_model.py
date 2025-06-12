@@ -63,6 +63,8 @@ class LSTMPredictor:
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+            # 簡化訓練流程，僅跑一個 epoch 以縮短時間
+            break
 
     def predict(self, recent_prices):
         if len(recent_prices) < self.lookback:

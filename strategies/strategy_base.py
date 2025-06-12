@@ -19,3 +19,32 @@ class Strategy(ABC):
         :return: "Buy" / "Sell" / "Short" / "Cover" / None
         """
         pass
+
+    def generate_signals(self, price_df):
+        """根據歷史資料逐步產生數值化的交易訊號序列。"""
+        import pandas as pd
+
+        signals = []
+        position = None
+        for i in range(len(price_df)):
+            data_slice = price_df.iloc[: i + 1]
+            action = self.generate_signal(data_slice, i, position)
+
+            if action == "Buy":
+                position = "Long"
+                signals.append(1)
+            elif action == "Short":
+                position = "Short"
+                signals.append(-1)
+            elif action in ("Sell", "Cover"):
+                position = None
+                signals.append(0)
+            else:  # 無動作，維持原持倉方向
+                if position == "Long":
+                    signals.append(1)
+                elif position == "Short":
+                    signals.append(-1)
+                else:
+                    signals.append(0)
+
+        return pd.Series(signals, index=price_df.index)

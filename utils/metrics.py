@@ -25,8 +25,11 @@ def generate_monthly_report(
 
     # 日期標準化
     daily_df["date"] = pd.to_datetime(daily_df["date"])
-    trade_log_df["entry_date"] = pd.to_datetime(trade_log_df["entry_date"])
-    trade_log_df["exit_date"] = pd.to_datetime(trade_log_df["exit_date"])
+    if not trade_log_df.empty:
+        trade_log_df["entry_date"] = pd.to_datetime(trade_log_df["entry_date"])
+        trade_log_df["exit_date"] = pd.to_datetime(trade_log_df["exit_date"])
+    else:
+        trade_log_df = pd.DataFrame(columns=["entry_date","exit_date","entry_price","exit_price","side","pnl"])
 
     # === 每月資產績效 ===
     daily_df["month"] = daily_df["date"].dt.to_period("M")
@@ -66,13 +69,14 @@ def generate_monthly_report(
     summary.to_excel(f"{output_prefix}_monthly_report.xlsx", sheet_name="總體統計", index=False, engine="openpyxl", mode='a')
 
     # === 輸出 XQ 回測格式 CSV ===
-    xq_df = trade_log_df.copy()
-    xq_df["Date"] = xq_df["entry_date"].dt.strftime('%Y%m%d')
-    xq_df["Action"] = xq_df["side"].map({"long": "Buy", "short": "Short"}).fillna("Buy")
-    xq_df["Symbol"] = STOCK_SYMBOL
-    xq_df["Price"] = xq_df["entry_price"]
-    xq_df["Quantity"] = 1000
-    xq_csv = xq_df[["Date", "Action", "Symbol", "Price", "Quantity"]]
-    xq_csv.to_csv(f"{output_prefix}_trades.csv", index=False, encoding='utf-8-sig')
+    if not trade_log_df.empty:
+        xq_df = trade_log_df.copy()
+        xq_df["Date"] = xq_df["entry_date"].dt.strftime('%Y%m%d')
+        xq_df["Action"] = xq_df["side"].map({"long": "Buy", "short": "Short"}).fillna("Buy")
+        xq_df["Symbol"] = STOCK_SYMBOL
+        xq_df["Price"] = xq_df["entry_price"]
+        xq_df["Quantity"] = 1000
+        xq_csv = xq_df[["Date", "Action", "Symbol", "Price", "Quantity"]]
+        xq_csv.to_csv(f"{output_prefix}_trades.csv", index=False, encoding='utf-8-sig')
 
     return report, summary
