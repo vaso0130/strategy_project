@@ -6,7 +6,7 @@ from market_regime import calculate_market_regime
 from llm_decision_engine import select_strategy_and_params
 from trade_simulator import TradeSimulator
 from utils.metrics import generate_monthly_report
-from strategies import *  # 匯入所有策略類別
+from strategies import TrendStrategy, RangeStrategy, BreakoutStrategy, VolumePriceStrategy # 確保匯入類別
 from optimizer import StrategyOptimizer
 
 from datetime import timedelta
@@ -29,11 +29,12 @@ simulator = TradeSimulator(
     allow_short=ALLOW_SHORT_SELLING
 )
 
+# 修改：儲存策略類別本身，而不是實例
 strategy_classes = {
-    "TrendStrategy": TrendStrategy(),
-    "RangeStrategy": RangeStrategy(),
-    "BreakoutStrategy": BreakoutStrategy(),
-    "VolumePriceStrategy": VolumePriceStrategy()
+    "TrendStrategy": TrendStrategy, # 注意：沒有 ()
+    "RangeStrategy": RangeStrategy,
+    "BreakoutStrategy": BreakoutStrategy,
+    "VolumePriceStrategy": VolumePriceStrategy
 }
 
 
@@ -68,8 +69,8 @@ if ENABLE_STRATEGY_OPTIMIZATION:
             "rsi_low": [45, 50],
             "rsi_high": [65, 70],
         },
-        "BreakoutStrategy": {"window": [15, 20]},
-        "VolumePriceStrategy": {"volume_ratio": [1.5, 2.0]},
+        "BreakoutStrategy": {"window": [15, 20]}, # 確保 BreakoutStrategy 的參數與其實際接受的參數一致
+        "VolumePriceStrategy": {"volume_ratio": [1.5, 2.0]}, # 確保 VolumePriceStrategy 的參數與其實際接受的參數一致
     }
 
     eval_map = {
@@ -80,18 +81,28 @@ if ENABLE_STRATEGY_OPTIMIZATION:
     evaluator = eval_map.get(STRATEGY_EVALUATOR, lambda m: m.get("sharpe", 0))
     pre_start = df[df["date"] < pd.to_datetime(START_DATE).date()]
 
-    optimized = {}
-    for name, strat in strategy_classes.items():
+    optimized_strategy_classes = {} # 用新的字典來儲存優化後的策略類別或帶有最佳參數的實例化方法
+    for name, strat_class in strategy_classes.items(): # strat_class 現在是類別
         grid = param_grids.get(name)
         if grid:
-            opt = StrategyOptimizer(type(strat), grid, evaluator)
+            # StrategyOptimizer 應該接收策略類別
+            opt = StrategyOptimizer(strat_class, grid, evaluator)
             result = opt.optimize(pre_start)
-            best = result.get("best_params") or {}
-            optimized[name] = type(strat)(**best)
-            print(f"[優化] {name} 最佳參數: {best}")
-        else:
-            optimized[name] = strat
-    strategy_classes = optimized
+            best_params = result.get("best_params") or {}
+            # 儲存帶有最佳參數的類別實例化方法 (lambda) 或直接儲存類別和最佳參數
+            # 為了與後續 LLM 選擇邏輯一致，我們這裡仍然讓 LLM 選擇參數，
+            # 所以 param_grids 應該包含優化後的參數範圍（如果需要動態調整）
+            # 或者，如果優化後的參數是固定的，可以直接更新 param_grids
+            # 這裡的 optimized_strategy_classes 暫時不用，因為 LLM 會選參數
+            print(f"[優化] {name} 最佳參數: {best_params}")
+            # 如果希望優化後固定參數，可以這樣：
+            # strategy_classes[name] = strat_class(**best_params) # 這會變回實例，後續 LLM 選擇參數會出錯
+            # 因此，優化的結果應該是更新 param_grids 或讓 LLM 知道這些最佳參數
+            # 目前的設計是 LLM 選擇參數，所以優化器找到的最佳參數可以作為 LLM 的一個參考或預設值
+            # 為了簡單起見，我們先假設優化器只是打印最佳參數，LLM 仍然從 param_grids 選
+        # else:
+            # optimized_strategy_classes[name] = strat_class # 如果沒有 grid，就用原始類別
+    # strategy_classes = optimized_strategy_classes # 如果採用上述註解的邏輯
 
 # 於迴圈開始前嘗試以歷史資料訓練 LSTM，若資料不足則待迴圈中再訓練
 lstm_trained = False
@@ -134,13 +145,15 @@ while current_day <= pd.to_datetime(END_DATE).date():
     dummy_metrics = {name: {"sharpe": 0.5, "win_rate": 0.6, "bias": 1} for name in strategy_classes}
     
     # 讓 LLM 選策略＋參數
+    # 確保 param_grids 傳遞給 LLM
     llm_result = select_strategy_and_params(regime, lstm_signal, dummy_metrics, param_grids)
     selected_name = llm_result["strategy"]
     selected_params = llm_result["params"]
 
     # 動態建立策略物件
-    strategy_class_constructor = strategy_classes[selected_name] # 直接取得類別
-    strategy = strategy_class_constructor(**selected_params)
+    # strategy_class_constructor 現在應該是策略類別本身
+    strategy_class_constructor = strategy_classes[selected_name]
+    strategy = strategy_class_constructor(**selected_params) # 現在可以正確地用類別和參數創建實例
     
     # 產生訊號時，只給策略當前日期之前的資料，避免用到未來函數
     # 並且訊號應該是針對接下來的交易日
