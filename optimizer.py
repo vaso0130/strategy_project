@@ -28,22 +28,51 @@ class StrategyOptimizer:
 
         for params in self.generate_param_combinations():
             strategy = self.strategy_class(**params)
-            # 確保傳遞給 generate_signals 的是 DataFrame
-            signals_df = strategy.generate_signals(price_df.copy())
+            signals_output = strategy.generate_signals(price_df.copy())
+
+            # 確保 signals_df 是一個 DataFrame 且 'signal' 欄位存在
+            if isinstance(signals_output, pd.Series):
+                signals_df = signals_output.to_frame(name='signal')
+                # 如果 Series 的索引是日期，需要重設索引以得到 'date' 欄
+                if isinstance(signals_df.index, pd.DatetimeIndex) or isinstance(signals_df.index, pd.PeriodIndex):
+                    signals_df = signals_df.reset_index()
+                    # 確保日期欄位名稱是 'date'
+                    if 'index' in signals_df.columns and 'date' not in signals_df.columns: # pandas < 2.0
+                         signals_df = signals_df.rename(columns={'index': 'date'})
+                    elif signals_df.index.name == 'date' and 'date' not in signals_df.columns: # pandas >= 2.0
+                         signals_df = signals_df.reset_index(names='date')
 
 
-            # 假設 price_df 中已有 'date' 和 'close'
-            # simulator 需要完整的市場數據 df 和訊號 df
-            # signals_df 應該包含 'date' 和 'signal'
+            elif isinstance(signals_output, pd.DataFrame):
+                signals_df = signals_output
+            else:
+                # 如果策略回傳的不是 Series 或 DataFrame，需要處理錯誤或轉換
+                print(f"[錯誤] 策略 {self.strategy_class.__name__} 未回傳有效的訊號格式。")
+                continue # 跳過此參數組合
+
+            # 再次確認 'date' 和 'signal' 欄位存在
+            if 'date' not in signals_df.columns or 'signal' not in signals_df.columns:
+                print(f"[錯誤] 策略 {self.strategy_class.__name__} 回傳的 signals_df 缺少 'date' 或 'signal' 欄位。")
+                print(f"Signals_df columns: {signals_df.columns}")
+                # 嘗試從索引恢復日期 (如果適用)
+                if 'date' not in signals_df.columns and (isinstance(signals_df.index, pd.DatetimeIndex) or isinstance(signals_df.index, pd.PeriodIndex)):
+                    signals_df = signals_df.reset_index()
+                    if 'index' in signals_df.columns and 'date' not in signals_df.columns:
+                         signals_df = signals_df.rename(columns={'index': 'date'})
+                    elif signals_df.index.name == 'date' and 'date' not in signals_df.columns:
+                         signals_df = signals_df.reset_index(names='date')
+
+                if 'date' not in signals_df.columns or 'signal' not in signals_df.columns:
+                    continue # 如果還是缺少必要欄位，則跳過
+
+
             from trade_simulator import TradeSimulator
-            # 修改：傳入必要的參數來初始化 TradeSimulator
             sim = TradeSimulator(
                 initial_capital=INITIAL_CAPITAL,
                 stop_loss=STOP_LOSS_THRESHOLD,
                 allow_short=ALLOW_SHORT_SELLING
             )
-            # 確保傳遞給 simulate 的是原始價格 df 和訊號 df
-            trades, _ = sim.simulate(price_df.copy(), signals_df) # 傳遞 price_df 和 signals_df
+            trades, _ = sim.simulate(price_df.copy(), signals_df)
             metrics = sim.calculate_metrics(trades)
 
 
