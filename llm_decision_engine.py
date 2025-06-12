@@ -32,31 +32,49 @@ def select_strategy_and_params(market_regime: str, lstm_signal: int, strategy_me
     """
     strategy_text = format_strategy_metrics(strategy_metrics)
     signal_text = {1: "預測上漲", -1: "預測下跌", 0: "無明確趨勢"}.get(lstm_signal, "無明確趨勢")
-    valid_strategies = list(strategy_metrics.keys())
+    valid_strategies = list(strategy_metrics.keys()) # 確保 valid_strategies 在 prompt 之前定義
     param_text = "\n".join(
-        f"{name} 可調參數: {list(param_grids.get(name, {}).keys())}" for name in valid_strategies
+        f"- {name}: 可調整參數有 {list(param_grids.get(name, {}).keys())}" for name in valid_strategies
     )
+    # 建立一個清晰的範例 JSON 字串
+    example_json = """{
+  "strategy": "TrendStrategy",
+  "params": {
+    "rsi_low": 40,
+    "rsi_high": 70
+  }
+}"""
 
-    prompt = f"""
-你是一位專業的量化交易顧問，請根據以下市場資訊，直接建議一組「策略名稱」與「參數組合」。
-請嚴格按照以下格式回覆（不要多加說明）：
+    prompt = f"""你是一位專業的量化交易顧問。請根據以下市場資訊，直接建議一組「策略名稱」與「參數組合」。
 
+你的回覆必須是一個「單獨的 JSON 物件」，不包含任何其他文字、註解、Markdown 標記 (例如 ```json) 或換行符號在 JSON 物件之外。
+
+**嚴格的輸出格式要求：**
+```json
 {{
-  "strategy": "策略名稱（只能從下列清單選一個）",
-  "params": {{參數名稱: 數值, ...}}
+  "strategy": "策略名稱",
+  "params": {{
+    "參數名稱1": 數值1,
+    "參數名稱2": 數值2
+  }}
 }}
+```
 
-市場型態：{market_regime}
-LSTM 預測：{signal_text}
+**可選策略清單 (你的 "strategy" 必須從此清單中選擇)：**
+{', '.join(valid_strategies)}
 
-可選策略與績效如下：
-{strategy_text}
-
-各策略可調參數如下：
+**各策略可調整的參數名稱提示：**
 {param_text}
 
-請只回覆一組 JSON 格式（不要多加說明），例如：
-{{"strategy": "TrendStrategy", "params": {{"rsi_low": 40, "rsi_high": 70}}}}
+**市場型態：** {market_regime}
+**LSTM 預測：** {signal_text}
+
+**可選策略與其歷史績效參考：**
+{strategy_text}
+
+請根據上述所有資訊，選擇一個最適合的策略及其參數。
+**再次強調，你的回覆「只能」是一個 JSON 物件，像這樣：**
+{example_json}
 """
 
     if model is None:
