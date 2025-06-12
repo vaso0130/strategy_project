@@ -1,0 +1,8 @@
+pandas
+numpy
+requests
+openpyxl
+yfinance
+scikit-learn
+torch
+google-generativeai

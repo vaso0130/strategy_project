@@ -88,6 +88,7 @@ while current_day <= pd.to_datetime(END_DATE).date():
     strategy = strategy_classes[selected_name]
 
     # 套用策略產出 signal
+    signals = strategy.generate_signals(past_df.append(today_row, ignore_index=True))
     # 將 LSTM 預測結果附加到今日資料供策略參考
     today_row = today_row.copy()
     pred_text = {1: "up", -1: "down"}.get(lstm_signal)

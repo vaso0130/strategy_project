@@ -20,7 +20,7 @@ class Strategy(ABC):
         """
         pass
 
-    def generate_signals(self, price_df):
+def generate_signals(self, price_df):
         """根據歷史資料逐步產生數值化的交易訊號序列。"""
         import pandas as pd
 
