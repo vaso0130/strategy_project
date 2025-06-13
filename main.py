@@ -734,6 +734,9 @@ def main(): # Consolidate all execution logic into this main function
                  daily_results_df.loc[len(daily_results_df)] = {'date': current_day, 'capital': INITIAL_CAPITAL} 
                  print(f"DEBUG [{log_date_str}] Missing price data & no prior capital. Recording initial capital: {INITIAL_CAPITAL:.2f}. Days no trade: {days_since_last_trade}")
 
+        # 新增：每日都記錄資本到 simulator
+        simulator.record_daily_capital(current_day)
+
         current_day += timedelta(days=1)
         # --- END 日期迴圈 ---
 
@@ -765,7 +768,6 @@ def main(): # Consolidate all execution logic into this main function
                     break
             if not found_last_date_capital:
                  simulator.daily_capital.append({"date": last_date, "capital": current_total_capital})
-
 
     # 在寫入 trade_log.csv 前，強制型態轉換，避免報表產生失敗
     final_trade_log_df = simulator.get_trade_log_df()

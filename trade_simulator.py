@@ -90,6 +90,7 @@ class TradeSimulator:
     def reset(self):
         self.cash = self.initial_capital
         self.current_position = 0
+        self.current_position_quantity = 0 # Ensure reset
         self.entry_price = 0
         self.trade_log = [] # Changed from self.trades = []
         # self.holding = False # This variable seems unused, consider removing if confirmed
@@ -182,76 +183,69 @@ class TradeSimulator:
         pnl = 0.0 # Initialize PNL for this trade
         log_action = ""
 
-        if self.current_position < 0:  # Buying to cover a short
-        # --- 1. 先決定 log_action ---
-            if trade_type == "Regular":        log_action = "Cover"
-            elif trade_type == "RegularSL":    log_action = "Cover_SL"
-            elif trade_type == "ForcedTSL":    log_action = "ForcedCover_TSL"
-            elif trade_type == "ForcedSL":     log_action = "ForcedCover_SL"
-            elif trade_type == "ForcedTP":     log_action = "ForcedCover_TP"
-            elif trade_type == "EndOfSim":     log_action = "Cover_EndOfSim"
-            else:                              log_action = f"Cover_{trade_type}"
+        # ===== Cover 空單 =====
+        if self.current_position < 0:          # Buying to cover a short
+            # 1️⃣ 判斷動作名稱
+            if trade_type == "Regular":        log_action = "CoverExit"
+            elif trade_type == "RegularSL":    log_action = "CoverExitSL"
+            elif trade_type == "ForcedTSL":    log_action = "CoverExitFTSL"
+            elif trade_type == "ForcedSL":     log_action = "CoverExitFSL"
+            elif trade_type == "ForcedTP":     log_action = "CoverExitFTP"
+            elif trade_type == "EndOfSim":     log_action = "CoverExitEoS"
+            else:                              log_action = f"CoverExit ({trade_type})"
 
-            # --- 2. 先計算要用到的金額 ---
-            proceeds = self.entry_price * adjusted_quantity       # 當初賣出空單的收入（被鎖在 margin_held）
-            cost     = price * adjusted_quantity                  # 現在買回股票要付的錢
-            trade_cost_effect = self._calculate_trade_cost(price, adjusted_quantity, "CoverExit")
+            # 2️⃣ 基礎金額
+            proceeds   = self.entry_price * adjusted_quantity      # 當初賣出拿到的錢
+            cost       = price * adjusted_quantity                 # 現在買回要付的錢
+            fee        = self._calculate_trade_cost(price, adjusted_quantity, "CoverExit")
 
-            # --- 3. 現金流 & 保證金調整 ---
-            self.margin_held -= proceeds                          # a) 保證金解除鎖定
-            self.cash        += proceeds                          # ▲b) 把賣出股票的本金放回現金
+            # 3️⃣ 釋放保證金 ➜ 回到現金
+            margin_rate       = config.SHORT_MARGIN_RATE_STOCK     # 例：0.9
+            margin_to_release = self.entry_price * adjusted_quantity * margin_rate
+            # 保護：若部位被分批回補，避免 margin_held 釋放過頭
+            margin_to_release = min(margin_to_release, self.margin_held)
 
-            self.cash        -= cost                              # ▲c) 付回補成本
-            self.cash        -= trade_cost_effect                 # d) 付手續費
+            self.margin_held -= margin_to_release                  # a) 解凍
+            self.cash        += margin_to_release                  # b) 放回現金
 
-            # --- 4. 計算 PNL（含手續費） ---
-            pnl = proceeds - cost - trade_cost_effect             # = (entry - price)*qty - fee
+            # 4️⃣ 支付買回成本 + 手續費
+            self.cash -= cost
+            self.cash -= fee
 
-            # --- 5. 更新部位 ---
-            self.current_position += adjusted_quantity            # 空單股數減少
+            # 5️⃣ 計算已實現損益（含手續費）
+            pnl = proceeds - cost - fee
+
+            # 6️⃣ 更新部位
+            self.current_position      += adjusted_quantity        # → 向零靠近
+            self.current_position_quantity = abs(self.current_position)
             if self.current_position == 0:
                 self.entry_price = 0
                 self.direction   = None
-                if self.is_forced_trade and self.forced_trade_direction == "short":
-                    self.is_forced_trade     = False
-                    self.forced_trade_direction = None
-                    self.current_forced_trade_id = None
 
-            # --- 6. 累計損益 & 日誌 ---
+            # 7️⃣ 記錄 PNL
             self.last_actual_trade_pnl = pnl
             self.cumulative_pnl       += pnl
-            print(f"SIMULATOR: Covering short. Qty: {adjusted_quantity}, "
-                f"Price: {price}, PNL: {pnl:.2f}")
 
-        else: # Opening or adding to a long position
-            if self.cash < cost + trade_cost_effect:
-                print(f"SIMULATOR WARNING: Insufficient cash for buy. Have {self.cash}, need {cost + trade_cost_effect}")
-                return None
-            if trade_type == "Regular": log_action = "Buy"
-            elif trade_type == "Forced": log_action = "ForcedBuy" 
-            else: log_action = f"Buy_{trade_type}" 
-            self.cash -= (cost + trade_cost_effect) # 只在多單開倉/加碼時扣款
-            if self.current_position > 0 : 
-                new_total_quantity = self.current_position + adjusted_quantity
-                self.entry_price = ((self.entry_price * self.current_position) + (price * adjusted_quantity)) / new_total_quantity
-                self.current_position = new_total_quantity
-            else: 
+        else: # Buying to open or add to a long position
+            log_action = ""
+            if trade_type == "Regular":        log_action = "Buy"
+            elif trade_type == "Forced":       log_action = "BuyForced" # Forced buy
+            elif trade_type.startswith("Opt"): log_action = f"Buy{trade_type[3:]}" # Optimizer initiated buy
+            else:                              log_action = f"Buy ({trade_type})"
+
+            if self.current_position == 0:
                 self.entry_price = price
-                self.current_position += adjusted_quantity
-            if log_action == "ForcedBuy":
-                self.is_forced_trade = True
-                self.forced_trade_entry_price = price 
-                self.forced_trade_direction = "long"
-                self.current_forced_trade_id = current_trade_id 
-                self.current_forced_trade_quantity = adjusted_quantity 
-                self.forced_trade_take_profit_target = self._round_price(price * (1 + self.forced_trade_take_profit_pct))
-                self.forced_trade_stop_loss_target = self._round_price(price * (1 - self.forced_trade_stop_loss_pct))
-                if self.forced_trade_use_trailing_stop:
-                    self.forced_trade_trailing_stop_price = self.forced_trade_stop_loss_target 
-                    self.current_forced_trade_highest_price_since_entry = price 
-            else: 
                 self.direction = "long"
-        
+            else: # Averaging down or adding to long
+                # Update average entry price: (old_total_cost + new_total_cost) / new_total_quantity
+                self.entry_price = (self.entry_price * self.current_position + price * adjusted_quantity) / (self.current_position + adjusted_quantity)
+
+            self.cash -= cost # Cost of shares
+            self.cash -= trade_cost_effect # Commission
+            self.current_position += adjusted_quantity
+            self.current_position_quantity = abs(self.current_position) # Update quantity
+            pnl = 0.0 # PNL is typically realized on selling/covering
+
         self.update_portfolio_value(price) # Update portfolio value based on the trade price for consistency at trade time
 
         trade_log_entry = {
@@ -313,61 +307,58 @@ class TradeSimulator:
             else: log_action = f"Sell_{trade_type}" 
 
             pnl = (price - self.entry_price) * adjusted_quantity - trade_cost_effect
-            self.cash += (proceeds - trade_cost_effect) # Add net proceeds
+            self.cash += proceeds
+            self.cash -= trade_cost_effect
             self.current_position -= adjusted_quantity
-            
+            self.current_position_quantity = abs(self.current_position) # Update quantity
             if self.current_position == 0:
                 self.entry_price = 0
-                self.direction = None # Reset regular trade direction
-                if self.is_forced_trade and self.forced_trade_direction == "long": 
-                    self.is_forced_trade = False
-                    self.forced_trade_direction = None
-                    self.current_forced_trade_id = None
-            
-            self.last_actual_trade_pnl = pnl 
-            self.cumulative_pnl += pnl 
-            print(f"SIMULATOR: Closing long. Qty: {adjusted_quantity}, Price: {price}, PNL: {pnl:.2f}")
-        
-        elif self.allow_short or trade_type == "ForcedShort": # Opening or adding to a short position
-            if adjusted_quantity > self.short_qty_cap and self.current_position == 0 : 
-                 print(f"SIMULATOR WARNING: Sell quantity {adjusted_quantity} exceeds short cap {self.short_qty_cap}. Adjusting.")
-                 adjusted_quantity = self.short_qty_cap
-            if adjusted_quantity == 0: return None
-            
-            if trade_type == "Regular": log_action = "Short"
-            elif trade_type == "Forced": log_action = "ForcedShort" 
-            # elif trade_type.startswith("OptShort"): log_action = trade_type # Keep OptShort_StrategyName
-            else: log_action = f"Short_{trade_type}"
+                self.direction = None
+            # Update current_position_quantity
+            self.current_position_quantity = abs(self.current_position)
 
-            # MODIFIED CASH AND MARGIN LOGIC FOR SHORTING
-            self.cash -= trade_cost_effect  # Cash only pays for commission
-            self.margin_held += proceeds     # Proceeds from short sell are held as margin
+        elif self.allow_short or trade_type == "ForcedShort" or trade_type.startswith("OptShort"): # Opening a new short position or adding to an existing one
+            log_action = ""
+            if trade_type == "Regular":         log_action = "ShortEntry"
+            elif trade_type == "ForcedShort":   log_action = "ShortEntryForced"
+            elif trade_type.startswith("OptShort"): log_action = f"ShortEntry{trade_type[8:]}" # Corrected f-string
+            else:                               log_action = f"ShortEntry ({trade_type})"
 
-            # Proper averaging for entry price if adding to existing short position:
-            if self.current_position < 0: # Adding to an existing short
-                new_total_quantity_abs = abs(self.current_position) + adjusted_quantity
-                self.entry_price = ((self.entry_price * abs(self.current_position)) + (price * adjusted_quantity)) / new_total_quantity_abs
-                self.current_position -= adjusted_quantity
-            else: # Opening new short
-                self.entry_price = price 
-                self.current_position -= adjusted_quantity
+            # Calculate margin requirement (example: 90% of proceeds for stocks)
+            # This is a simplified example; actual margin rules are complex.
+            margin_requirement_per_share = price * config.SHORT_MARGIN_RATE_STOCK  # e.g., 0.9 for 90%
+            total_margin_required_for_this_trade = margin_requirement_per_share * adjusted_quantity
+
+            # Check if enough cash for margin (plus a buffer, or consider existing margin_held)
+            # For simplicity, let's assume cash must cover the margin for *this* trade directly.
+            # A more robust check would consider total cash vs total margin for all short positions.
+            if self.cash < total_margin_required_for_this_trade and not (self.current_position < 0) : # Only check if opening new short, not adding
+                 print(f"SIMULATOR WARNING: Insufficient cash for short margin. Cash: {self.cash}, Required: {total_margin_required_for_this_trade}. No trade.")
+                 return None
 
 
-            if log_action == "ForcedShort":
-                self.is_forced_trade = True
-                self.forced_trade_entry_price = price # Use the (rounded) trade price
-                self.forced_trade_direction = "short"
-                self.current_forced_trade_id = current_trade_id # Associate with this trade
-                self.current_forced_trade_quantity = adjusted_quantity # Store quantity of forced trade
-                self.forced_trade_take_profit_target = self._round_price(price * (1 - self.forced_trade_take_profit_pct))
-                self.forced_trade_stop_loss_target = self._round_price(price * (1 + self.forced_trade_stop_loss_pct))
-                if self.forced_trade_use_trailing_stop:
-                    self.forced_trade_trailing_stop_price = self.forced_trade_stop_loss_target # Initialize trailing stop
-                    self.current_forced_trade_lowest_price_since_entry = price # Initialize for trailing stop
-            else: 
+            if self.current_position == 0: # Opening new short
+                self.entry_price = price
                 self.direction = "short"
-        else: 
-            print(f"SIMULATOR WARNING: Sell condition not met. Allow short: {self.allow_short}, Trade Type: {trade_type}")
+                self.cash += proceeds              # ① 收到賣股款
+                self.cash -= total_margin_required_for_this_trade # ② 扣除保證金
+                self.margin_held += total_margin_required_for_this_trade # ③ 保證金鎖定
+            else: # Adding to existing short (averaging up short price)
+                # Update average entry price for shorts
+                # (old_total_proceeds + new_total_proceeds) / new_total_quantity
+                # self.current_position is negative here
+                self.entry_price = (self.entry_price * abs(self.current_position) + price * adjusted_quantity) / (abs(self.current_position) + adjusted_quantity)
+                self.cash += proceeds # 收到賣股款
+                self.cash -= total_margin_required_for_this_trade # 扣除新加碼的保證金
+                self.margin_held += total_margin_required_for_this_trade # 鎖定新加碼的保證金
+
+            self.cash -= trade_cost_effect # Pay commission
+            self.current_position -= adjusted_quantity # Position becomes more negative
+            self.current_position_quantity = abs(self.current_position) # Update quantity
+            pnl = 0.0 # PNL is realized on covering
+
+        else: # Should not happen if logic is correct (e.g. trying to sell with no position and shorting not allowed)
+            print(f"SIMULATOR WARNING: Sell attempt failed. Position: {self.current_position}, Allow Short: {self.allow_short}, Trade Type: {trade_type}")
             return None
 
         self.update_portfolio_value(price) # Update portfolio value based on the trade price
@@ -561,10 +552,7 @@ class TradeSimulator:
                                 if log_entry_this_step: trade_executed_this_step = True
             
             self.update_portfolio_value(current_price_close) 
-            self.daily_capital.append({
-                "date": current_date, 
-                "capital": round(self.cash + self.portfolio_value, 2) # Round daily capital
-            })
+            self.record_daily_capital(current_date)
             # Reset trade_executed_today for the next day
             self.trade_executed_today = False
 
@@ -582,6 +570,17 @@ class TradeSimulator:
         
         # Return both trade log and daily capital
         return self.get_trade_log_df(), pd.DataFrame(self.daily_capital)
+
+    def record_daily_capital(self, date):
+        # 僅記錄尚未記錄過的日期，避免重複
+        current_date_str = pd.Timestamp(date).strftime('%Y-%m-%d')
+        if not self.daily_capital or self.daily_capital[-1]['date'] != current_date_str:
+            # Calculate capital: cash + portfolio value - margin held
+            capital_value = self.cash + self.portfolio_value - self.margin_held
+            self.daily_capital.append({
+                "date": current_date_str,
+                "capital": round(capital_value, 2)
+            })
 
     def get_trade_log_df(self):
         """將內部交易日誌轉換為 DataFrame。"""
