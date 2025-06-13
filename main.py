@@ -783,6 +783,7 @@ def main(): # Consolidate all execution logic into this main function
 
     # 獲取每日資產 DataFrame
     daily_capital_df = simulator.get_daily_capital_df() # simulator.daily_capital is a list of dicts
+    #daily_capital_df = daily_results_df.copy()
     if not daily_capital_df.empty:
         # Ensure 'date' is datetime for proper resampling, and 'capital' is numeric
         daily_capital_df['date'] = pd.to_datetime(daily_capital_df['date'])
@@ -809,28 +810,27 @@ def main(): # Consolidate all execution logic into this main function
         # generate_monthly_report 需要 daily_df, trade_log_df, strategy_name, initial_capital
         report_df, summary_df = generate_monthly_report(
             daily_df=daily_capital_df.copy(), # 傳遞副本以避免意外修改
-            trade_log_df=report_trade_log_df.copy(), # 傳遞副本
+            raw_trade_log_df=report_trade_log_df.copy(), # 修正參數名稱
             strategy_name=strategy_name_for_report,
             initial_capital=INITIAL_CAPITAL
         )
 
-        if report_df is not None and not report_df.empty:
-            csv_filename = f"{strategy_name_for_report}_monthly_performance.csv"
-            report_df.to_csv(csv_filename, index=True)
-            logging.info(f"Monthly performance report for {strategy_name_for_report} saved to {csv_filename}")
-            print(f"--- Monthly Performance Report for {strategy_name_for_report} (tail) ---")
-            print(report_df.tail())
-            if summary_df is not None and not summary_df.empty:
-                summary_filename = f"{strategy_name_for_report}_performance_summary.xlsx"
-                # summary_df.to_csv(summary_filename, index=False)
-                # logging.info(f"Performance summary for {strategy_name_for_report} saved to {summary_filename}")
-                # 輸出到 Excel 的同一個檔案的不同工作表
-                with pd.ExcelWriter(summary_filename, engine='openpyxl', mode='a' if os.path.exists(summary_filename) else 'w') as writer:
-                    summary_df.to_excel(writer, sheet_name=f"{strategy_name_for_report}_Summary", index=False)
-                logging.info(f"Performance summary for {strategy_name_for_report} appended to {summary_filename}")
-
-        else:
-            logging.info(f"Could not generate monthly performance report for {strategy_name_for_report} (generated report_df is empty or None).")
+        # if report_df is not None and not report_df.empty:
+        #     csv_filename = f"{strategy_name_for_report}_monthly_performance.csv"
+        #     report_df.to_csv(csv_filename, index=True)
+        #     logging.info(f"Monthly performance report for {strategy_name_for_report} saved to {csv_filename}")
+        #     print(f"--- Monthly Performance Report for {strategy_name_for_report} (tail) ---")
+        #     print(report_df.tail())
+        #     if summary_df is not None and not summary_df.empty:
+        #         summary_filename = f"{strategy_name_for_report}_performance_summary.xlsx"
+        #         # summary_df.to_csv(summary_filename, index=False)
+        #         # logging.info(f"Performance summary for {strategy_name_for_report} saved to {summary_filename}")
+        #         # 輸出到 Excel 的同一個檔案的不同工作表
+        #         with pd.ExcelWriter(summary_filename, engine='openpyxl', mode='a' if os.path.exists(summary_filename) else 'w') as writer:
+        #             summary_df.to_excel(writer, sheet_name=f"{strategy_name_for_report}_Summary", index=False)
+        #         logging.info(f"Performance summary for {strategy_name_for_report} appended to {summary_filename}")
+        # else:
+        #     logging.info(f"Could not generate monthly performance report for {strategy_name_for_report} (generated report_df is empty or None).")
 
         # 計算並打印整體績效指標 - 使用 utils.metrics 中的函數
         if not daily_capital_df.empty:

@@ -182,36 +182,46 @@ class TradeSimulator:
         pnl = 0.0 # Initialize PNL for this trade
         log_action = ""
 
-        if self.current_position < 0: # Buying to cover a short
-            if trade_type == "Regular": log_action = "Cover"
-            elif trade_type == "RegularSL": log_action = "Cover_SL"
-            elif trade_type == "ForcedTSL": log_action = "ForcedCover_TSL"
-            elif trade_type == "ForcedSL": log_action = "ForcedCover_SL"
-            elif trade_type == "ForcedTP": log_action = "ForcedCover_TP"
-            elif trade_type == "EndOfSim": log_action = "Cover_EndOfSim"
-            else: log_action = f"Cover_{trade_type}"
+        if self.current_position < 0:  # Buying to cover a short
+        # --- 1. 先決定 log_action ---
+            if trade_type == "Regular":        log_action = "Cover"
+            elif trade_type == "RegularSL":    log_action = "Cover_SL"
+            elif trade_type == "ForcedTSL":    log_action = "ForcedCover_TSL"
+            elif trade_type == "ForcedSL":     log_action = "ForcedCover_SL"
+            elif trade_type == "ForcedTP":     log_action = "ForcedCover_TP"
+            elif trade_type == "EndOfSim":     log_action = "Cover_EndOfSim"
+            else:                              log_action = f"Cover_{trade_type}"
 
-            pnl = (self.entry_price - price) * adjusted_quantity - trade_cost_effect
-            # 1. 釋放保證金
-            amount_to_release_from_margin = self.entry_price * adjusted_quantity
-            self.margin_held -= amount_to_release_from_margin
-            # 2. 扣手續費
-            self.cash -= trade_cost_effect
-            # 3. 盈虧進出現金
-            self.cash += (self.entry_price - price) * adjusted_quantity
+            # --- 2. 先計算要用到的金額 ---
+            proceeds = self.entry_price * adjusted_quantity       # 當初賣出空單的收入（被鎖在 margin_held）
+            cost     = price * adjusted_quantity                  # 現在買回股票要付的錢
+            trade_cost_effect = self._calculate_trade_cost(price, adjusted_quantity, "CoverExit")
 
-            self.current_position += adjusted_quantity 
+            # --- 3. 現金流 & 保證金調整 ---
+            self.margin_held -= proceeds                          # a) 保證金解除鎖定
+            self.cash        += proceeds                          # ▲b) 把賣出股票的本金放回現金
+
+            self.cash        -= cost                              # ▲c) 付回補成本
+            self.cash        -= trade_cost_effect                 # d) 付手續費
+
+            # --- 4. 計算 PNL（含手續費） ---
+            pnl = proceeds - cost - trade_cost_effect             # = (entry - price)*qty - fee
+
+            # --- 5. 更新部位 ---
+            self.current_position += adjusted_quantity            # 空單股數減少
             if self.current_position == 0:
                 self.entry_price = 0
-                self.direction = None 
-                if self.is_forced_trade and self.forced_trade_direction == "short": 
-                    self.is_forced_trade = False
+                self.direction   = None
+                if self.is_forced_trade and self.forced_trade_direction == "short":
+                    self.is_forced_trade     = False
                     self.forced_trade_direction = None
-                    self.current_forced_trade_id = None 
-            
-            self.last_actual_trade_pnl = pnl 
-            self.cumulative_pnl += pnl 
-            print(f"SIMULATOR: Covering short. Qty: {adjusted_quantity}, Price: {price}, PNL: {pnl:.2f}")
+                    self.current_forced_trade_id = None
+
+            # --- 6. 累計損益 & 日誌 ---
+            self.last_actual_trade_pnl = pnl
+            self.cumulative_pnl       += pnl
+            print(f"SIMULATOR: Covering short. Qty: {adjusted_quantity}, "
+                f"Price: {price}, PNL: {pnl:.2f}")
 
         else: # Opening or adding to a long position
             if self.cash < cost + trade_cost_effect:

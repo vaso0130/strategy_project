@@ -60,10 +60,23 @@ python main.py
 
 如需自訂以下內容，請參閱並修改 `config.py`：
 
-- 回測起訖日期
-- 股票代碼（預設為台灣 0050）
-- 策略選擇與評估依據（如夏普值、勝率、報酬率）
-- 是否啟用策略參數優化（`ENABLE_STRATEGY_OPTIMIZATION`）
+- **回測起訖日期、股票代碼**：設定回測的時間範圍與標的。
+- **INITIAL_CAPITAL**：初始資金（TWD）。
+- **STOP_LOSS_THRESHOLD**：停損線（如 0.05 代表 5%）。
+- **ALLOW_SHORT_SELLING**：是否允許放空。
+- **SHORT_QTY_CAP**：放空時的最大數量。
+- **LSTM_TRAIN_WINDOW**：LSTM 訓練所需資料點數。
+- **LSTM_LOOKBACK_DAYS**：LSTM 觀察天數。
+- **LSTM_PREDICT_DAYS**：LSTM 預測未來天數。
+- **LSTM_RETRAIN_INTERVAL**：每幾天重訓一次 LSTM。
+- **LSTM_EPOCHS**：LSTM 訓練 epoch 數。
+- **LSTM_LEARNING_RATE**：LSTM 學習率。
+- **策略選擇與評估依據**：如夏普值、勝率、報酬率。
+- **ENABLE_STRATEGY_OPTIMIZATION**：是否啟用策略參數優化。
+- **強制交易相關參數**：如最大無交易天數、強制交易資金分配、停利停損設定。
+- **其他策略與回測細節參數**：可依需求擴充。
+
+> 各參數皆有註解說明，請依需求調整，靈活打造屬於你的量化交易系統。
 
 ---
 

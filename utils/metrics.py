@@ -239,12 +239,30 @@ def generate_monthly_report(
 
     # === 輸出 Excel：使用 ExcelWriter 正確寫入多工作表 ===
     excel_path = f"{output_prefix}_monthly_report.xlsx"
+    # --- 新增：寫入前清理 DataFrame 型別與 NaN ---
+    def _clean_df_for_excel(df):
+        for col in df.columns:
+            if df[col].dtype == 'O':
+                df[col] = df[col].astype(str)
+            if df[col].isnull().any():
+                if df[col].dtype.kind in 'fi':
+                    df[col] = df[col].fillna(0)
+                else:
+                    df[col] = df[col].fillna('')
+        return df
+    report = _clean_df_for_excel(report)
+    summary = _clean_df_for_excel(summary)
+    # --- End 清理 ---
     try:
         with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
             report.to_excel(writer, sheet_name="每月績效", index=False)
             summary.to_excel(writer, sheet_name="總體統計", index=False)
     except Exception as e:
         print(f"Error writing Excel file {excel_path}: {e}")
+        print("report dtypes:", report.dtypes)
+        print("summary dtypes:", summary.dtypes)
+        print("report head:\n", report.head())
+        print("summary head:\n", summary.head())
 
 
     # === 輸出 XQ 回測格式 CSV ===
