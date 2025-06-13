@@ -28,9 +28,9 @@ GEMINI_MODEL_NAME = "gemini-1.5-flash"
 # Forced Trading Parameters
 MAX_DAYS_NO_TRADE = 10  # 連續未交易N天後考慮強制進場
 ENABLE_FORCED_TRADING = True # 是否啟用強制進場功能
-FORCED_TRADE_TAKE_PROFIT_PCT = 0.05  # 強制進場交易的止盈百分比 (例如 5%)
-FORCED_TRADE_STOP_LOSS_PCT = 0.02    # 強制進場交易的止損百分比 (例如 2%)
-FORCED_TRADE_USE_TRAILING_STOP = False  # 強制進場交易是否使用移動止損
+FORCED_TRADE_TAKE_PROFIT_PCT = 0.035  # 強制進場交易的止盈百分比 (例如 3.5%)
+FORCED_TRADE_STOP_LOSS_PCT = 0.015    # 強制進場交易的止損百分比 (例如 1.5%)
+FORCED_TRADE_USE_TRAILING_STOP = True  # 強制進場交易是否使用移動止損
 FORCED_TRADE_CAPITAL_ALLOCATION = 0.25  # 強制進場時使用的資金比例 (例如 25% 的現金)
 
 # === 報告與紀錄設定 ===
