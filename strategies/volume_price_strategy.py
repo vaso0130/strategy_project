@@ -2,6 +2,7 @@ import pandas as pd
 from .strategy_base import Strategy
 
 class VolumePriceStrategy(Strategy):
+    MIN_LOOKBACK = 5 # 新增 MIN_LOOKBACK 類別屬性
     """
     量價策略：
     - 成交量明顯放大且價格突破短期均線 => Buy
@@ -32,28 +33,22 @@ class VolumePriceStrategy(Strategy):
         if pd.isna(ma_short) or pd.isna(volume_ma):
             # print(f"DEBUG [{row.get('date', 'Unknown Date')} VolumePriceStrategy]: ma_short or volume_ma NaN.")
             return None
-
-
-        volume_threshold = self.params.get("volume_ratio", 1.5)
-        rsi_high = self.params.get("rsi_high", 70)
-        rsi_low = self.params.get("rsi_low", 50)
+        # 優化：降低volume spike門檻，放寬RSI
+        volume_threshold = self.params.get("volume_ratio", 1.2)
+        rsi_high = self.params.get("rsi_high", 75)
+        rsi_low = self.params.get("rsi_low", 45)
         allow_short = self.params.get("allow_short", True)
-
-        # Volume spike
         volume_spike = volume > volume_threshold * volume_ma
-
+        action = None
         if position is None:
-            if volume_spike and price > ma_short and rsi < rsi_high:
-                return "Buy"
-            elif volume_spike and price < ma_short and rsi > rsi_low and allow_short:
-                return "Short"
-
+            if (volume_spike or volume > volume_ma) and price > ma_short * 0.99 and rsi < rsi_high:
+                action = "Buy"
+            elif (volume_spike or volume > volume_ma) and price < ma_short * 1.01 and rsi > rsi_low and allow_short:
+                action = "Short"
         elif position == "Long":
-            if price < ma_short or rsi > rsi_high:
-                return "Sell"
-
+            if price < ma_short * 1.01 or rsi > rsi_high:
+                action = "Sell"
         elif position == "Short":
-            if price > ma_short or rsi < rsi_low:
-                return "Cover"
-
-        return None
+            if price > ma_short * 0.99 or rsi < rsi_low:
+                action = "Cover"
+        return action

@@ -28,13 +28,24 @@ class Strategy(ABC):
         dates = []
         position = None # 'Long', 'Short', or None
 
+        # print(f"DEBUG Base: Generating signals for {type(self).__name__} with params {self.params}")
+
         for i in range(len(price_df)):
             # 確保 data_slice 包含日期，並且是 DataFrame
             data_slice = price_df.iloc[: i + 1]
             current_date = price_df['date'].iloc[i]
             dates.append(current_date)
 
+            # --- DEBUG PRINTS ---
+            print(f"DEBUG Base [{current_date}]: About to call generate_signal for {type(self).__name__}")
+            print(f"DEBUG Base [{current_date}]:   data_slice length: {len(data_slice)}, type: {type(data_slice)}")
+            print(f"DEBUG Base [{current_date}]:   current_index (i): {i}, type: {type(i)}")
+            print(f"DEBUG Base [{current_date}]:   position: '{position}', type: {type(position)}")
+            # --- END DEBUG PRINTS ---
+            
             action = self.generate_signal(data_slice, i, position)
+            
+            # print(f"DEBUG Base [{current_date}]: Action from {type(self).__name__}: {action}")
 
             current_signal_value = 0 # 預設為無訊號/平倉
             if action == "Buy":
@@ -47,7 +58,7 @@ class Strategy(ABC):
                 position = "Short"
             elif action in ("Sell", "Cover"):
                 if position is not None: # 只有在有持倉時才平倉
-                    current_signal_value = 0
+                    current_signal_value = 0 # Signal 0 for closing a position
                 position = None
             # else: # 無明確動作 (action is None)
                 # 維持前一天的訊號 (代表持倉不動)
