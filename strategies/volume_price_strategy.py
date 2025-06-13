@@ -10,16 +10,29 @@ class VolumePriceStrategy(Strategy):
     """
 
     def generate_signal(self, data_slice, current_index, position):
+        # 至少需要 5 筆數據來計算 rolling(window=5)
+        if len(data_slice) < 5:
+            # print(f"DEBUG [VolumePriceStrategy]: Not enough data for rolling window. Len: {len(data_slice)}")
+            return None
+
         row = data_slice.iloc[-1]
-        prev_row = data_slice.iloc[-2] if len(data_slice) >= 2 else row
+        # prev_row = data_slice.iloc[-2] if len(data_slice) >= 2 else row # prev_row 未在此邏輯中使用
 
         price = row["Close"]
-        volume = row["Volume"]
+        volume = row.get("Volume") # 使用 .get()
+        rsi = row.get("RSI") # 使用 .get()
+
+        if pd.isna(price) or pd.isna(volume) or pd.isna(rsi):
+            # print(f"DEBUG [{row.get('date', 'Unknown Date')} VolumePriceStrategy]: Price, Volume or RSI NaN.")
+            return None
 
         ma_short = data_slice["Close"].rolling(window=5).mean().iloc[-1]
         volume_ma = data_slice["Volume"].rolling(window=5).mean().iloc[-1]
 
-        rsi = row.get("RSI", 50)
+        if pd.isna(ma_short) or pd.isna(volume_ma):
+            # print(f"DEBUG [{row.get('date', 'Unknown Date')} VolumePriceStrategy]: ma_short or volume_ma NaN.")
+            return None
+
 
         volume_threshold = self.params.get("volume_ratio", 1.5)
         rsi_high = self.params.get("rsi_high", 70)

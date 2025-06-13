@@ -6,6 +6,7 @@ def download_yahoo_data(symbol: str, start_date: str, end_date: str) -> dict:
     """
     從 Yahoo Finance JSON API 下載股價資料。
     """
+    print(f"[DEBUG data_loader] download_yahoo_data called with: symbol='{symbol}', start_date='{start_date}', end_date='{end_date}'")
     period1 = int(time.mktime(time.strptime(start_date, "%Y-%m-%d")))
     period2 = int(time.mktime(time.strptime(end_date, "%Y-%m-%d")))
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1={period1}&period2={period2}&interval=1d"
@@ -51,6 +52,7 @@ def load_price_data(symbol: str, start_date: str, end_date: str) -> pd.DataFrame
     """
     整合下載與轉換流程，回傳乾淨的歷史價格資料（DataFrame）。
     """
+    print(f"[DEBUG data_loader] load_price_data called with: symbol='{symbol}', start_date='{start_date}', end_date='{end_date}'")
     try:
         raw_json = download_yahoo_data(symbol, start_date, end_date)
         return parse_yahoo_chart_to_df(raw_json)

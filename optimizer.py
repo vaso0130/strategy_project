@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from strategies import *
 # 新增：從 config 匯入必要的參數
-from config import INITIAL_CAPITAL, STOP_LOSS_THRESHOLD, ALLOW_SHORT_SELLING
+from config import INITIAL_CAPITAL, STOP_LOSS_THRESHOLD, ALLOW_SHORT_SELLING, STOCK_SYMBOL # 新增 STOCK_SYMBOL
 
 class StrategyOptimizer:
     def __init__(self, strategy_class, param_grid: dict, evaluator):
@@ -70,9 +70,14 @@ class StrategyOptimizer:
             sim = TradeSimulator(
                 initial_capital=INITIAL_CAPITAL,
                 stop_loss=STOP_LOSS_THRESHOLD,
-                allow_short=ALLOW_SHORT_SELLING
+                allow_short=ALLOW_SHORT_SELLING,
+                stock_symbol=STOCK_SYMBOL, # 新增 stock_symbol 參數
+                # 在優化器中，我們可能不需要啟用強制交易，或者需要從 config 傳遞這些參數
+                # 為了簡單起見，這裡暫時禁用或使用預設值
+                enable_forced_trading=False # 或者從 config 匯入並傳遞
             )
-            trades, _ = sim.simulate(price_df.copy(), signals_df)
+            # 修改：接收 simulate 回傳的三個值
+            trades, final_capital, daily_capital_df = sim.simulate(price_df.copy(), signals_df)
             metrics = sim.calculate_metrics(trades)
 
 
