@@ -3,6 +3,7 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 import json
 import ast # Added import
+import re # ADDED IMPORT
 
 # 載入環境變數
 load_dotenv()
@@ -27,7 +28,7 @@ safety_settings = [
 ]
 
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash", 
+    model_name="gemini-2.0-flash", 
     generation_config=generation_config,
     safety_settings=safety_settings,
 )
@@ -43,6 +44,7 @@ def select_strategy_and_params(current_date, price_data_str, news_sentiment_summ
     When not in a forced scenario, selects a strategy target if conditions are met.
     """
     llm_decision_context = {"prompt": "", "response": ""}
+    capital_allocation_factor = None # ADDED: Initialize capital allocation factor
 
     if is_forced_trade_scenario:
         lstm_signal_str = "Buy" if lstm_signal == 1 else "Short" if lstm_signal == -1 else "Neutral"
@@ -95,10 +97,10 @@ Provide a brief rationale for your choice, especially if abstaining.
             else:
                 print(f"LLM returned unclear forced trade decision: {decision_text}. Defaulting to AbstainForceTrade.")
                 decision = "AbstainForceTrade"
-            return decision, None, llm_decision_context
+            return decision, None, None, llm_decision_context # MODIFIED RETURN
         except Exception as e:
             print(f"Error calling Gemini API for forced trade: {e}")
-            return "AbstainForceTrade", None, llm_decision_context # Default to abstain on error
+            return "AbstainForceTrade", None, None, llm_decision_context # MODIFIED RETURN
     else: # This is for selecting/revising a strategy TARGET
         strategy_list_str = ", ".join(available_strategies)
         
@@ -139,9 +141,11 @@ Provide a brief rationale for your choice, especially if abstaining.
         prompt_intro += "\n- Avoid switching strategies too frequently; prefer parameter adjustment unless performance is poor."
         prompt_intro += "\n- **Do NOT always select the same strategy. You must dynamically choose the most suitable strategy based on recent market conditions, and avoid picking the same strategy for many consecutive periods.**"
         prompt_intro += "\n- Always provide a brief reason for your choice, especially if you keep the same strategy."
-        prompt_intro += "\n- Return your answer in the format: STRATEGY_NAME{\"param1\": value1, \"param2\": value2, ...}, expected_trades_per_month: X, reason: <your_reason>"
+        # CORRECTED PROMPT STRING BELOW
+        prompt_intro += '\n- Return your answer in the format: STRATEGY_NAME{\"param1\": value1, \"param2\": value2, ...}, expected_trades_per_month: X, capital_allocation_factor: Y (a float between 0.0 and 1.0), reason: <your_reason>'
         prompt_intro += "\n\nExample:"
-        prompt_intro += "\nBreakoutStrategy{\"window\": 15, \"rsi_low\": 40, \"rsi_high\": 65, \"breakout_tol\": 0.995}, expected_trades_per_month: 4, reason: Market is consolidating and volatility is low."
+        # CORRECTED PROMPT STRING BELOW
+        prompt_intro += '\nBreakoutStrategy{\"window\": 15, \"rsi_low\": 40, \"rsi_high\": 65, \"breakout_tol\": 0.995}, expected_trades_per_month: 4, capital_allocation_factor: 0.7, reason: Market is consolidating and volatility is low.'
         prompt_intro += "\n\nYour turn:"
 
         prompt = f"{prompt_intro}\nCurrent Date: {current_date}\nPrice Data (last 5 days):\n{price_data_str}\nMarket News/Sentiment (summarized): {news_sentiment_summary}\nLSTM Signal: {'Buy' if lstm_signal == 1 else 'Short' if lstm_signal == -1 else 'Neutral'}\n"
@@ -216,6 +220,25 @@ Provide a brief rationale for your choice, especially if abstaining.
                 strategy_name = response_text.strip()
                 params = None
 
+            # ADDED: Parse capital_allocation_factor from the full response_text
+            factor_match = re.search(r"capital_allocation_factor:\s*([0-9.]+)", response_text, re.IGNORECASE)
+            if factor_match:
+                try:
+                    factor_val = float(factor_match.group(1))
+                    if 0.0 <= factor_val <= 1.0: # Ensure factor is within a valid range
+                        capital_allocation_factor = factor_val
+                        print(f"LLM suggested capital_allocation_factor: {capital_allocation_factor}")
+                    else:
+                        print(f"LLM suggested capital_allocation_factor {factor_val} out of range [0.0, 1.0]. Using None.")
+                        capital_allocation_factor = None 
+                except ValueError:
+                    print(f"Could not parse capital_allocation_factor value: {factor_match.group(1)}. Using None.")
+                    capital_allocation_factor = None
+            else:
+                print("capital_allocation_factor not found in LLM response. Using None.")
+                capital_allocation_factor = None # Explicitly set to None if not found
+
+
             # If LLM fails to select a valid strategy from the list, default to "Abstain"
             # main.py will interpret "Abstain" in this context as "LLM failed to pick a new target, continue with old or do nothing"
             if strategy_name not in available_strategies:
@@ -230,10 +253,11 @@ Provide a brief rationale for your choice, especially if abstaining.
                         break
                 if not found_known_strategy:
                     strategy_name = "Abstain" # This signals main.py to not change the strategy or not set one if none active
-                params = None # Ensure params are None if strategy is unknown/defaulted
+                    params = None # Ensure params are None if strategy is unknown/defaulted
+                    capital_allocation_factor = None # ADDED: Reset factor if strategy becomes Abstain
             
-            return strategy_name, params, llm_decision_context
+            return strategy_name, params, capital_allocation_factor, llm_decision_context # MODIFIED RETURN
 
         except Exception as e:
             print(f"Error calling Gemini API or parsing response for strategy selection: {e}")
-            return "Abstain", None, llm_decision_context # Default to Abstain on error
+            return "Abstain", None, None, llm_decision_context # MODIFIED RETURN

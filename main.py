@@ -1,6 +1,6 @@
 import pandas as pd
 import inspect
-from config import *
+from config import * # Make sure this imports all new config variables
 from data_loader import load_price_data
 from lstm_model import LSTMPredictor
 from market_regime import calculate_market_regime
@@ -10,8 +10,9 @@ from utils.metrics import generate_monthly_report, calculate_performance_metrics
 import strategies # Import the strategies module
 from strategies import TrendStrategy, RangeStrategy, BreakoutStrategy, VolumePriceStrategy
 from optimizer import StrategyOptimizer
-from datetime import timedelta
+from datetime import timedelta, datetime # Ensure datetime is imported
 import logging # Added import for logging
+import os # For file operations if needed for trade log
 
 # --- DataFetcher class ---
 # This class is used to fetch and preprocess data for the strategies and LSTM
@@ -76,6 +77,24 @@ class DataFetcher:
             # return calculate_market_regime(data_for_regime) # Assuming this function exists and takes a DataFrame
             return "trend" # Placeholder
         return "unknown"
+
+def calculate_yearly_pnl(trade_log_df, year):
+    if trade_log_df.empty or 'Date' not in trade_log_df.columns or 'PNL' not in trade_log_df.columns:
+        return 0.0
+    
+    # Ensure 'Date' is datetime like
+    try:
+        # Attempt to convert, handling potential mixed formats or errors
+        log_df_copy = trade_log_df.copy()
+        log_df_copy['Date'] = pd.to_datetime(log_df_copy['Date'], errors='coerce')
+        # Drop rows where date conversion failed
+        log_df_copy.dropna(subset=['Date'], inplace=True)
+        
+        yearly_trades = log_df_copy[log_df_copy['Date'].dt.year == year]
+        return yearly_trades['PNL'].sum()
+    except Exception as e:
+        print(f"Error in calculate_yearly_pnl during date conversion or sum: {e}")
+        return 0.0
 
 def main(): # Consolidate all execution logic into this main function
     # === 載入資料 ===
@@ -296,84 +315,185 @@ def main(): # Consolidate all execution logic into this main function
     daily_results_df = pd.DataFrame(columns=['date', 'capital']) # Initialize daily_results_df
 
     # === 主流程 ===
-    current_day = pd.to_datetime(START_DATE).date()
-    days_since_last_trade = 0 # 初始化無交易日計數器
+    current_day_dt = pd.to_datetime(START_DATE).date() # Ensure current_day_dt is a date object
+    days_since_last_trade = 0
 
-    # Initialize retrain_day based on pre-training outcome
+    # --- Portfolio Protection and Capital Allocation Variables ---
+    portfolio_protection_triggered_this_year = False
+    current_year_pnl_tracker = 0.0 
+    protected_profit_level = 0.0
+    effective_capital_factor_limit = 1.0 
+    halt_all_new_trades_flag = False 
+    last_processed_year_for_protection = None
+    
+    # Load all historical trades if a log file exists, to calculate previous years' PNL
+    all_trades_history_df = pd.DataFrame()
+    trade_log_path = f"g:/final/產治結果/{STOCK_SYMBOL.replace('.TW', '')}trade_log.csv" # Construct path
+    if os.path.exists(trade_log_path):
+        try:
+            all_trades_history_df = pd.read_csv(trade_log_path)
+            if 'Date' in all_trades_history_df.columns:
+                 all_trades_history_df['Date'] = pd.to_datetime(all_trades_history_df['Date'], errors='coerce')
+            print(f"Successfully loaded historical trade log from {trade_log_path}")
+        except Exception as e:
+            print(f"Error loading historical trade log from {trade_log_path}: {e}")
+    # --- End Portfolio Protection Init ---
+
     if initial_train_successful and initial_train_end_date is not None:
         retrain_day = initial_train_end_date
         print(f"DEBUG: LSTM 預訓練成功，上次訓練日設為 {retrain_day}")
     else:
         # If no successful pre-training, set retrain_day to ensure training happens early in the loop
-        retrain_day = current_day - timedelta(days=LSTM_RETRAIN_INTERVAL + 1)
-        print(f"DEBUG: LSTM 未進行預訓練或預訓練失敗，下次訓練將盡早於 {current_day} 之後開始。")
+        retrain_day = current_day_dt - timedelta(days=LSTM_RETRAIN_INTERVAL + 1)
+        print(f"DEBUG: LSTM 未進行預訓練或預訓練失敗，下次訓練將盡早於 {current_day_dt} 之後開始。")
 
 
     prev_strategy_logging_name = None # 用於日誌記錄的變數，以避免重複打印相同的策略
 
-    while current_day <= pd.to_datetime(END_DATE).date():
-        trade_occurred_today = False # Initialize for the current day
-        signal_action_str = None # Reset for the current day's strategy signal output
-        forced_trade_action = None # Reset forced trade decision for the day
+    while current_day_dt <= pd.to_datetime(END_DATE).date(): # Use current_day_dt
+        current_year = current_day_dt.year
+        trade_occurred_today = False 
+        signal_action_str = None 
+        forced_trade_action = None 
+        llm_suggested_capital_factor_for_trade = None # Initialize for the day
 
-        print(f"\\nDEBUG: ----- Processing Day: {current_day} -----") # Corrected f-string and escaping
+        # --- Yearly Portfolio Protection Logic ---
+        if ENABLE_PORTFOLIO_PROTECTION and current_year != last_processed_year_for_protection:
+            print(f"--- Processing Portfolio Protection for year: {current_year} ---")
+            portfolio_protection_triggered_this_year = False # Reset trigger for new year
+            halt_all_new_trades_flag = False # Reset halt flag for new year
+            effective_capital_factor_limit = 1.0 # Reset limit for new year
+            current_year_pnl_tracker = 0.0 # Reset PNL tracker for the new year
+            
+            if current_year > PORTFOLIO_START_YEAR:
+                previous_year_to_check = current_year - 1
+                # Calculate PNL for previous_year_to_check using all_trades_history_df
+                # This assumes all_trades_history_df contains up-to-date PNL from previous simulations/runs
+                # Or, if trade_log is built incrementally, it should be used.
+                # For simplicity, using simulator's log if available, else history.
+                current_sim_trade_log_df = simulator.get_trade_log_df()
+                
+                # Prioritize current simulation's log for previous year's PNL if it spans multiple years
+                # otherwise, use the loaded historical log.
+                df_for_prev_year_pnl = current_sim_trade_log_df if not current_sim_trade_log_df.empty and current_sim_trade_log_df['Date'].dt.year.min() < current_year else all_trades_history_df
+                
+                prev_year_pnl_value = calculate_yearly_pnl(df_for_prev_year_pnl, previous_year_to_check)
+                
+                if prev_year_pnl_value > 0:
+                    protected_profit_level = prev_year_pnl_value * PORTFOLIO_PROFIT_PROTECTION_THRESHOLD
+                    print(f"Year {current_year}: Protected profit level set to {protected_profit_level:.2f} (based on {previous_year_to_check} PNL: {prev_year_pnl_value:.2f})")
+                else:
+                    protected_profit_level = 0 # No profit from previous year to protect
+                    print(f"Year {current_year}: No profit to protect from {previous_year_to_check} (PNL: {prev_year_pnl_value:.2f})")
+            else:
+                protected_profit_level = 0 # Not past the start year for protection
+                print(f"Year {current_year}: Portfolio protection not active (current year <= PORTFOLIO_START_YEAR).")
+            last_processed_year_for_protection = current_year
+        # --- End Yearly Portfolio Protection Logic ---
+
+        print(f"\\nDEBUG: ----- Processing Day: {current_day_dt} -----") # Corrected f-string and escaping
         # Corrected line: Ensure 'date' is treated as a column name string
         # Use full_df to get all historical data up to the day before current_day
-        past_df = full_df[full_df['date'] < current_day].copy()
-        today_row = df[df['date'] == current_day]
+        past_df = full_df[full_df['date'] < current_day_dt].copy()
+        today_row = df[df['date'] == current_day_dt]
 
         if today_row.empty:
-            print(f"DEBUG [{current_day}]: No data for today. Skipping.")
-            current_day += timedelta(days=1)
+            print(f"DEBUG [{current_day_dt}]: No data for today. Skipping.")
+            current_day_dt += timedelta(days=1)
+            days_since_last_trade +=1 # Increment even on no-data days for forced trading
+            simulator.record_daily_capital(current_day_dt) # Record capital even if no trade
             continue
 
         min_hist_days_for_strat_features = MAX_LOOKBACK_PERIOD
         if len(past_df) < max(LSTM_LOOKBACK_DAYS, min_hist_days_for_strat_features):
-            print(f"DEBUG [{current_day}]: Insufficient past_df data (len: {len(past_df)}). Needs at least {max(LSTM_LOOKBACK_DAYS, min_hist_days_for_strat_features)}. Skipping.")
-            current_day += timedelta(days=1)
+            print(f"DEBUG [{current_day_dt}]: Insufficient past_df data (len: {len(past_df)}). Needs at least {max(LSTM_LOOKBACK_DAYS, min_hist_days_for_strat_features)}. Skipping.")
+            current_day_dt += timedelta(days=1)
+            days_since_last_trade +=1
+            simulator.record_daily_capital(current_day_dt)
             continue
         
         # retrain LSTM 模型
+        # Ensure retrain_day is a date object for comparison
+        if isinstance(retrain_day, pd.Timestamp): retrain_day = retrain_day.date()
+
         if (len(past_df) >= LSTM_TRAIN_WINDOW and
-           ((not lstm_trained) or (current_day - retrain_day).days >= LSTM_RETRAIN_INTERVAL)):
+           ((not lstm_trained) or (current_day_dt - retrain_day).days >= LSTM_RETRAIN_INTERVAL)):
             train_data = past_df.tail(LSTM_TRAIN_WINDOW)
             # 確保訓練數據本身也足夠長以產生樣本
             if len(train_data) >= LSTM_LOOKBACK_DAYS + LSTM_PREDICT_DAYS + 1:
-                print(f"DEBUG [{current_day}]: Training LSTM with {len(train_data)} data points.")
+                print(f"DEBUG [{current_day_dt}]: Training LSTM with {len(train_data)} data points.")
                 try:
-                    lstm.train(train_data)
-                    retrain_day = current_day
+                    lstm.train(train_data[['date', 'Close']]) # Ensure correct columns
+                    retrain_day = current_day_dt
                     lstm_trained = True
-                    print(f"DEBUG [{current_day}]: LSTM 訓練成功。")
+                    print(f"DEBUG [{current_day_dt}]: LSTM 訓練成功。")
                 except Exception as e:
-                    print(f"錯誤 [{current_day}]: LSTM 訓練失敗: {e}")
+                    print(f"錯誤 [{current_day_dt}]: LSTM 訓練失敗: {e}")
             else:
-                print(f"DEBUG [{current_day}]: LSTM 訓練數據集長度 ({len(train_data)}) 不足以產生訓練樣本。跳過此次訓練。")
+                print(f"DEBUG [{current_day_dt}]: LSTM 訓練數據集長度 ({len(train_data)}) 不足以產生訓練樣本。跳過此次訓練。")
 
-
-        # 預測未來走勢
         recent_data_for_lstm = past_df.tail(LSTM_LOOKBACK_DAYS)
-        lstm_signal = 0 # 預設為0
+        lstm_signal = 0
         if lstm_trained and len(recent_data_for_lstm) >= LSTM_LOOKBACK_DAYS:
             try:
-                lstm_signal = lstm.predict(recent_data_for_lstm)
+                lstm_signal = lstm.predict(recent_data_for_lstm[['date', 'Close']]) # Ensure correct columns
             except Exception as e:
-                print(f"錯誤 [{current_day}]: LSTM 預測失敗: {e}")
-                lstm_signal = 0 # 預測失敗則訊號為0
-        print(f"DEBUG [{current_day}]: LSTM trained: {lstm_trained}, LSTM signal: {lstm_signal}")
+                print(f"錯誤 [{current_day_dt}]: LSTM 預測失敗: {e}")
+        print(f"DEBUG [{current_day_dt}]: LSTM trained: {lstm_trained}, LSTM signal: {lstm_signal}")
 
-        # 判斷市場狀態
-        # 確保用於市場狀態判斷的數據足夠長 (calculate_market_regime 預設 window=30)
         market_regime_window = 30
         if len(past_df) >= market_regime_window:
-            regime = calculate_market_regime(past_df.tail(market_regime_window * 2)) # 給更長一點的數據以防邊界
+            regime = calculate_market_regime(past_df.tail(market_regime_window * 2))
         else:
-            regime = "unknown" # 或其他預設值
-        print(f"DEBUG [{current_day}]: Market regime: {regime}")
+            regime = "unknown"
+        print(f"DEBUG [{current_day_dt}]: Market regime: {regime}")
         
+        current_date_str_for_llm = current_day_dt.strftime('%Y-%m-%d')
+        if len(past_df) >= 5:
+            cols_for_llm_price = [col for col in ['Open', 'High', 'Low', 'Close', 'Volume'] if col in past_df.columns]
+            price_data_for_llm_str = past_df.tail(5)[cols_for_llm_price].to_string()
+        elif not past_df.empty:
+            cols_for_llm_price = [col for col in ['Open', 'High', 'Low', 'Close', 'Volume'] if col in past_df.columns]
+            price_data_for_llm_str = past_df[cols_for_llm_price].to_string()
+        else:
+            price_data_for_llm_str = "No historical price data available for LLM."
+        news_sentiment_summary_for_llm = f"Market Regime: {regime}. News details not processed at this call site."
+        available_strategies_for_llm = list(strategy_classes.keys())
+
+        # --- 輔助函數：計算年度 PNL ---
+        def calculate_yearly_pnl(trade_log_df, year):
+            if trade_log_df.empty or 'Date' not in trade_log_df.columns or 'PNL' not in trade_log_df.columns:
+                return 0.0
+            
+            # Ensure 'Date' is datetime like
+            try:
+                # Attempt to convert, handling potential mixed formats or errors
+                log_df_copy = trade_log_df.copy()
+                log_df_copy['Date'] = pd.to_datetime(log_df_copy['Date'], errors='coerce')
+                # Drop rows where date conversion failed
+                log_df_copy.dropna(subset=['Date'], inplace=True)
+                
+                yearly_trades = log_df_copy[log_df_copy['Date'].dt.year == year]
+                return yearly_trades['PNL'].sum()
+            except Exception as e:
+                print(f"Error in calculate_yearly_pnl during date conversion or sum: {e}")
+                return 0.0
+
+        days_current_strategy_active = 0
+        if current_active_strategy_name and current_strategy_start_date:
+            # Ensure current_strategy_start_date is a date object
+            if isinstance(current_strategy_start_date, pd.Timestamp): current_strategy_start_date = current_strategy_start_date.date()
+            days_current_strategy_active = (current_day_dt - current_strategy_start_date).days
+        
+        print(f"DEBUG [{current_day_dt}]: Current active strategy: {current_active_strategy_name}, active for {days_current_strategy_active} days. Min duration: {MIN_STRATEGY_DURATION_DAYS}")
+
+        current_last_trade_pnl = simulator.get_last_trade_pnl()
+        current_cumulative_pnl = simulator.get_cumulative_pnl() # Changed to method call
+
+        todays_recommended_signal_for_llm = None
         # --- LLM Strategy Selection and Signal Generation ---
         # forced_trade_action = None  # Reset forced trade decision for the day # 已在迴圈開頭重置
-        current_date_str_for_llm = current_day.strftime('%Y-%m-%d')
+        current_date_str_for_llm = current_day_dt.strftime('%Y-%m-%d')
         if len(past_df) >= 5:
             cols_for_llm_price = [col for col in ['Open', 'High', 'Low', 'Close', 'Volume'] if col in past_df.columns]
             price_data_for_llm_str = past_df.tail(5)[cols_for_llm_price].to_string()
@@ -388,9 +508,9 @@ def main(): # Consolidate all execution logic into this main function
         # --- 策略目標選擇/持續邏輯 ---
         days_current_strategy_active = 0
         if current_active_strategy_name and current_strategy_start_date:
-            days_current_strategy_active = (current_day - current_strategy_start_date).days
+            days_current_strategy_active = (current_day_dt - current_strategy_start_date).days
         
-        print(f"DEBUG [{current_day}]: Current active strategy: {current_active_strategy_name}, active for {days_current_strategy_active} days. Min duration: {MIN_STRATEGY_DURATION_DAYS}")
+        print(f"DEBUG [{current_day_dt}]: Current active strategy: {current_active_strategy_name}, active for {days_current_strategy_active} days. Min duration: {MIN_STRATEGY_DURATION_DAYS}")
 
         # 在呼叫 LLM 之前獲取 PNL 數據
         current_last_trade_pnl = simulator.get_last_trade_pnl() # Changed to method call
@@ -400,16 +520,16 @@ def main(): # Consolidate all execution logic into this main function
         todays_recommended_signal_for_llm = None # Default to None
         # Try to get current strategy's signal to inform forced trade LLM
         if USE_GEMINI_STRATEGY_SELECTION and current_active_strategy_name and current_active_strategy_name in strategy_classes:
-            print(f"DEBUG [{current_day}]: Pre-calculating signal for '{current_active_strategy_name}' to inform forced trade LLM.")
+            print(f"DEBUG [{current_day_dt}]: Pre-calculating signal for '{current_active_strategy_name}' to inform forced trade LLM.")
             TempStrategyClass = strategy_classes[current_active_strategy_name]
             # Prepare data for this temporary signal generation
-            temp_df_for_signal = full_df[full_df['date'] < current_day].copy()
+            temp_df_for_signal = full_df[full_df['date'] < current_day_dt].copy()
             
             if 'Close' in temp_df_for_signal.columns:
                 temp_df_for_signal["MA"] = temp_df_for_signal["Close"].rolling(window=20).mean()
                 temp_df_for_signal["RSI"] = compute_rsi(temp_df_for_signal["Close"]) # compute_rsi is defined in main()
             else:
-                print(f"WARNING [{current_day}]: 'Close' column missing in temp_df_for_signal for LLM pre-signal.")
+                print(f"WARNING [{current_day_dt}]: 'Close' column missing in temp_df_for_signal for LLM pre-signal.")
 
             if current_active_strategy_name == "TrendStrategy":
                 if not temp_df_for_signal.empty and 'Prediction' not in temp_df_for_signal.columns: # Avoid overwriting if already there
@@ -417,7 +537,7 @@ def main(): # Consolidate all execution logic into this main function
                     if not temp_df_for_signal.empty:
                          temp_df_for_signal.loc[temp_df_for_signal.index[-1], 'Prediction'] = lstm_signal
                 elif temp_df_for_signal.empty:
-                    print(f"WARNING [{current_day}]: temp_df_for_signal is empty, cannot attach LSTM prediction for TrendStrategy (LLM pre-signal).")
+                    print(f"WARNING [{current_day_dt}]: temp_df_for_signal is empty, cannot attach LSTM prediction for TrendStrategy (LLM pre-signal).")
 
             temp_strategy_instance = TempStrategyClass(params=current_active_strategy_params if current_active_strategy_params else {})
             min_lookback_temp = getattr(temp_strategy_instance, 'MIN_LOOKBACK', MAX_LOOKBACK_PERIOD)
@@ -427,7 +547,7 @@ def main(): # Consolidate all execution logic into this main function
                 try:
                     raw_signal = temp_strategy_instance.generate_signal(
                         data_slice=temp_df_for_signal,
-                        current_index=current_day, # Consistent with later signal generation
+                        current_index=current_day_dt, # Consistent with later signal generation
                         position=temp_pos_status
                     )
                     if raw_signal == "BUY":
@@ -440,335 +560,291 @@ def main(): # Consolidate all execution logic into this main function
                     else: 
                         todays_recommended_signal_for_llm = 0
 
-                    print(f"DEBUG [{current_day}]: Pre-calculated signal for LLM: {raw_signal} -> {todays_recommended_signal_for_llm}")
+                    print(f"DEBUG [{current_day_dt}]: Pre-calculated signal for LLM: {raw_signal} -> {todays_recommended_signal_for_llm}")
                 except Exception as e_sig:
-                    print(f"DEBUG [{current_day}]: Error generating temp signal for LLM: {e_sig}")
+                    print(f"DEBUG [{current_day_dt}]: Error generating temp signal for LLM: {e_sig}")
                     todays_recommended_signal_for_llm = 0 # Default to neutral on error
             else:
-                print(f"DEBUG [{current_day}]: Not enough data for temp signal for LLM (needs {min_lookback_temp}, got {len(temp_df_for_signal)}).")
+                print(f"DEBUG [{current_day_dt}]: Not enough data for temp signal for LLM (needs {min_lookback_temp}, got {len(temp_df_for_signal)}).")
                 todays_recommended_signal_for_llm = 0
 
 
         # 優先處理強制交易的判斷
-        if USE_GEMINI_STRATEGY_SELECTION and ENABLE_FORCED_TRADING and days_since_last_trade >= MAX_DAYS_NO_TRADE:
-            print(f"DEBUG [{current_day}]: Potential forced trade scenario. Days since last trade: {days_since_last_trade}. Calling LLM for forced trade decision.")
+        if USE_GEMINI_STRATEGY_SELECTION and ENABLE_FORCED_TRADING and days_since_last_trade >= MAX_DAYS_NO_TRADE and not halt_all_new_trades_flag:
+            print(f"DEBUG [{current_day_dt}]: Potential forced trade scenario. Days since last trade: {days_since_last_trade}. Calling LLM for forced trade decision.")
             
-            forced_decision, _, llm_context_forced = select_strategy_and_params(
-                current_date=current_date_str_for_llm,
-                price_data_str=price_data_for_llm_str,
-                news_sentiment_summary=news_sentiment_summary_for_llm,
-                available_strategies=available_strategies_for_llm, 
-                lstm_signal=lstm_signal,
-                days_since_last_trade=days_since_last_trade,
-                max_days_no_trade=MAX_DAYS_NO_TRADE,
-                is_forced_trade_scenario=True,
+            forced_decision, _, _, llm_context_forced = select_strategy_and_params( # Expecting 4 return values now
+                current_date=current_date_str_for_llm, price_data_str=price_data_for_llm_str,
+                news_sentiment_summary=news_sentiment_summary_for_llm, available_strategies=available_strategies_for_llm, 
+                lstm_signal=lstm_signal, days_since_last_trade=days_since_last_trade,
+                max_days_no_trade=MAX_DAYS_NO_TRADE, is_forced_trade_scenario=True,
                 recommended_strategy_name=current_active_strategy_name,
-                recommended_strategy_signal=todays_recommended_signal_for_llm # Pass the generated signal
+                recommended_strategy_signal=todays_recommended_signal_for_llm,
+                # Pass PNL context even for forced trades if it influences decision to abstain/proceed
+                last_trade_pnl=current_last_trade_pnl, cumulative_pnl=current_cumulative_pnl
             )
-            print(f"DEBUG [{current_day}]: LLM forced trade decision: {forced_decision}")
+            print(f"DEBUG [{current_day_dt}]: LLM forced trade decision: {forced_decision}")
 
             if forced_decision in ["ForcedBuy", "ForcedShort"]:
                 forced_trade_action = forced_decision
                 current_active_strategy_name = None 
                 current_active_strategy_params = {}
                 current_strategy_start_date = None
-                print(f"DEBUG [{current_day}]: LLM decided a forced trade: {forced_trade_action}. Regular strategy target reset.")
+                # For forced trades, capital allocation is from FORCED_TRADE_CAPITAL_ALLOCATION
+                # No specific LLM factor for forced trades in this setup, but could be added.
+                llm_suggested_capital_factor_for_trade = FORCED_TRADE_CAPITAL_ALLOCATION / REGULAR_TRADE_CAPITAL_ALLOCATION if REGULAR_TRADE_CAPITAL_ALLOCATION > 0 else 1.0
+                print(f"DEBUG [{current_day_dt}]: LLM forced trade: {forced_trade_action}. Regular strategy reset. Factor based on FORCED_TRADE_CAPITAL_ALLOCATION.")
             elif forced_decision == "AbstainForceTrade":
                 forced_trade_action = "AbstainForceTrade" 
-                print(f"DEBUG [{current_day}]: LLM decided to AbstainForceTrade.")
+                print(f"DEBUG [{current_day_dt}]: LLM decided to AbstainForceTrade.")
             else: 
-                print(f"WARNING [{current_day}]: LLM returned unexpected forced trade decision: {forced_decision}. Defaulting to AbstainForceTrade.")
+                print(f"WARNING [{current_day_dt}]: LLM unexpected forced decision: {forced_decision}. Abstaining.")
                 forced_trade_action = "AbstainForceTrade"
         
         # 如果沒有執行強制交易 (LLM決定不強制 或 未達到強制交易天數)
         # 則進行常規的策略目標選擇/持續判斷
-        if USE_GEMINI_STRATEGY_SELECTION and (not forced_trade_action or forced_trade_action == "AbstainForceTrade"):
+        if USE_GEMINI_STRATEGY_SELECTION and (not forced_trade_action or forced_trade_action == "AbstainForceTrade") and not halt_all_new_trades_flag:
             if forced_trade_action == "AbstainForceTrade":
-                print(f"DEBUG [{current_day}]: LLM abstained from forced trade. Proceeding with regular strategy target selection/evaluation.")
+                print(f"DEBUG [{current_day_dt}]: LLM abstained from forced trade. Regular strategy selection.")
 
             should_select_new_strategy_target = False
             if not current_active_strategy_name: 
-                print(f"DEBUG [{current_day}]: No active strategy. LLM will select an initial strategy target.")
                 should_select_new_strategy_target = True
             elif days_current_strategy_active >= MIN_STRATEGY_DURATION_DAYS:
-                print(f"DEBUG [{current_day}]: Current strategy '{current_active_strategy_name}' has met min duration ({days_current_strategy_active} >= {MIN_STRATEGY_DURATION_DAYS}). LLM can select a new target.")
                 should_select_new_strategy_target = True
-            # else: # No change to should_select_new_strategy_target, it remains False
-            #    print(f"DEBUG [{current_day}]: Current strategy '{current_active_strategy_name}' active for {days_current_strategy_active} days, continues as target (min duration {MIN_STRATEGY_DURATION_DAYS} not met).")
-
 
             if should_select_new_strategy_target:
-                print(f"DEBUG [{current_day}]: Calling LLM to select/revise strategy target (is_forced_trade_scenario=False).")
-                strategy_name, strategy_params, llm_context_strat = select_strategy_and_params(
-                    current_date=current_date_str_for_llm,
-                    price_data_str=price_data_for_llm_str,
-                    news_sentiment_summary=news_sentiment_summary_for_llm,
-                    available_strategies=available_strategies_for_llm,
-                    lstm_signal=lstm_signal,
-                    days_since_last_trade=days_since_last_trade, 
-                    max_days_no_trade=MAX_DAYS_NO_TRADE, 
-                    is_forced_trade_scenario=False, 
+                print(f"DEBUG [{current_day_dt}]: Calling LLM to select/revise strategy target.")
+                strategy_name, strategy_params, llm_capital_factor, llm_context_strat = select_strategy_and_params(
+                    current_date=current_date_str_for_llm, price_data_str=price_data_for_llm_str,
+                    news_sentiment_summary=news_sentiment_summary_for_llm, available_strategies=available_strategies_for_llm,
+                    lstm_signal=lstm_signal, days_since_last_trade=days_since_last_trade, 
+                    max_days_no_trade=MAX_DAYS_NO_TRADE, is_forced_trade_scenario=False, 
                     current_active_strategy_name=current_active_strategy_name,
                     current_strategy_days_active=days_current_strategy_active,
                     min_strategy_duration=MIN_STRATEGY_DURATION_DAYS,
-                    last_trade_pnl=current_last_trade_pnl,
-                    cumulative_pnl=current_cumulative_pnl
+                    last_trade_pnl=current_last_trade_pnl, cumulative_pnl=current_cumulative_pnl
                 )
-                print(f"DEBUG [{current_day}]: LLM (for strategy target) returned: name='{strategy_name}', params={strategy_params}")
+                llm_suggested_capital_factor_for_trade = llm_capital_factor # Store LLM's suggestion
+                print(f"DEBUG [{current_day_dt}]: LLM (strategy target) returned: name='{strategy_name}', params={strategy_params}, capital_factor={llm_capital_factor}")
 
                 if strategy_name in strategy_classes:
                     if current_active_strategy_name != strategy_name or current_active_strategy_params != (strategy_params or {}):
-                        print(f"DEBUG [{current_day}]: LLM selected new/updated strategy target: {strategy_name} with params {strategy_params}")
                         current_active_strategy_name = strategy_name
                         current_active_strategy_params = strategy_params or {}
-                        current_strategy_start_date = current_day 
+                        current_strategy_start_date = current_day_dt 
                         strategy_repeat_count = 0 # Reset repeat count on new strategy
                         last_llm_selected_strategy = strategy_name # Track last selected strategy
                     # else:
-                        # print(f"DEBUG [{current_day}]: LLM re-selected same strategy target '{strategy_name}' with same params. Duration counter continues.")
+                        # print(f"DEBUG [{current_day_dt}]: LLM re-selected same strategy target '{strategy_name}' with same params. Duration counter continues.")
                 elif strategy_name == "Abstain" or strategy_name is None:
-                    print(f"DEBUG [{current_day}]: LLM (for strategy target) returned '{strategy_name}'. No change to current strategy target '{current_active_strategy_name}'.")
+                    print(f"DEBUG [{current_day_dt}]: LLM abstained from changing strategy target.")
                 else: 
-                    print(f"WARNING [{current_day}]: LLM (for strategy target) returned invalid strategy: '{strategy_name}'. Resetting active strategy.")
-                    current_active_strategy_name = None
-                    current_active_strategy_params = {}
-                    current_strategy_start_date = None
+                    print(f"WARNING [{current_day_dt}]: LLM returned invalid strategy: '{strategy_name}'. Resetting.")
+                    current_active_strategy_name = None; current_active_strategy_params = {}; current_strategy_start_date = None
             elif current_active_strategy_name: 
-                 print(f"DEBUG [{current_day}]: Continuing with strategy target: {current_active_strategy_name} with params {current_active_strategy_params} (min duration not met or no need to change).")
+                 print(f"DEBUG [{current_day_dt}]: Continuing with strategy: {current_active_strategy_name}")
         
-        elif not USE_GEMINI_STRATEGY_SELECTION:
-            print(f"DEBUG [{current_day}]: USE_GEMINI_STRATEGY_SELECTION is False. No LLM calls for strategy selection or forced trading.")
+        elif not USE_GEMINI_STRATEGY_SELECTION and not halt_all_new_trades_flag:
             if not current_active_strategy_name: 
-                current_active_strategy_name = "TrendStrategy" 
+                current_active_strategy_name = DEFAULT_STRATEGY 
                 current_active_strategy_params = {}
-                current_strategy_start_date = current_day
-                print(f"DEBUG [{current_day}]: Default strategy '{current_active_strategy_name}' activated.")
+                current_strategy_start_date = current_day_dt
+                print(f"DEBUG [{current_day_dt}]: Default strategy '{current_active_strategy_name}' activated.")
+        
+        # --- Determine Final Capital Allocation Factor ---
+        final_trade_capital_factor = DEFAULT_CAPITAL_ALLOCATION_FACTOR # Fallback
+        if ENABLE_LLM_CAPITAL_ALLOCATION and llm_suggested_capital_factor_for_trade is not None:
+            if 0.0 <= llm_suggested_capital_factor_for_trade <= 1.0:
+                final_trade_capital_factor = llm_suggested_capital_factor_for_trade
+            else:
+                print(f"Warning: LLM suggested capital factor {llm_suggested_capital_factor_for_trade} out of range. Using default.")
+        
+        # Apply portfolio protection limit
+        final_trade_capital_factor = min(final_trade_capital_factor, effective_capital_factor_limit)
+        print(f"DEBUG [{current_day_dt}]: Capital Allocation: LLM_suggested={llm_suggested_capital_factor_for_trade}, Protection_Limit={effective_capital_factor_limit}, Final_Factor_for_REGULAR_ALLOC={final_trade_capital_factor}")
 
-        # --- Signal Generation from active strategy (if not a forced trade by LLM and a strategy is active) ---
-        log_date_str = current_day.strftime('%Y-%m-%d') 
 
-        # 只有在沒有強制交易動作，且有活躍的常規策略時，才由常規策略產生訊號
-        if not forced_trade_action or forced_trade_action == "AbstainForceTrade":
+        log_date_str = current_day_dt.strftime('%Y-%m-%d') 
+        trade_executed_this_iteration = None # To store the result of buy/sell
+
+        if halt_all_new_trades_flag:
+            print(f"LOG [{log_date_str}]: HALT_TRADING active due to portfolio protection. No new trades.")
+            signal_action_str = "HOLD" # Override any signal
+            forced_trade_action = None # Ensure no forced trade either
+
+        # --- Execute Forced Trade Action ---
+        if forced_trade_action in ["ForcedBuy", "ForcedShort"] and not halt_all_new_trades_flag:
+            print(f"LOG [{log_date_str}]: Processing LLM Forced Action: {forced_trade_action}")
+            # Use FORCED_TRADE_CAPITAL_ALLOCATION directly for quantity calculation
+            # The 'final_trade_capital_factor' is more for regular trades scaled by LLM.
+            # Forced trades have their own capital allocation setting.
+            capital_for_forced_trade = simulator.cash * FORCED_TRADE_CAPITAL_ALLOCATION
+            price_for_trade = today_row['Open'].iloc[0] # Use today's open for trade
+            quantity_to_trade = int(capital_for_forced_trade / price_for_trade)
+            quantity_to_trade = simulator._adjust_quantity(quantity_to_trade) # Use simulator's method
+
+            if quantity_to_trade > 0:
+                if forced_trade_action == "ForcedBuy":
+                    trade_executed_this_iteration = simulator.buy(price_for_trade, quantity_to_trade, current_day_dt, trade_type="ForcedBuy")
+                elif forced_trade_action == "ForcedShort":
+                    trade_executed_this_iteration = simulator.sell(price_for_trade, quantity_to_trade, current_day_dt, trade_type="ForcedShort")
+            else:
+                print(f"LOG [{log_date_str}]: Forced trade quantity is 0. No trade executed.")
+            days_since_last_trade = 0 # Reset counter if forced trade attempted/executed
+            trade_occurred_today = True if trade_executed_this_iteration else False
+
+
+        # --- Execute Regular Strategy Signal ---
+        elif (not forced_trade_action or forced_trade_action == "AbstainForceTrade") and not halt_all_new_trades_flag:
             if current_active_strategy_name and current_active_strategy_name in strategy_classes:
+                # ... (Strategy signal generation - existing code) ...
                 if prev_strategy_logging_name != current_active_strategy_name:
-                    print(f"DEBUG [{current_day}]: Attempting to use strategy: {current_active_strategy_name} with params: {current_active_strategy_params}")
+                    print(f"DEBUG [{current_day_dt}]: Attempting to use strategy: {current_active_strategy_name} with params: {current_active_strategy_params}")
                     prev_strategy_logging_name = current_active_strategy_name
                 
                 StrategyClass = strategy_classes[current_active_strategy_name]
-                df_for_signal_gen = full_df[full_df['date'] < current_day].copy()
+                # Use full_df for all historical data up to day before current_day_dt
+                df_for_signal_gen = full_df[full_df['date'] < current_day_dt].copy()
+
 
                 if 'Close' in df_for_signal_gen.columns:
-                    df_for_signal_gen["MA"] = df_for_signal_gen["Close"].rolling(window=20).mean() # Corrected: removed backslash
-                    df_for_signal_gen["RSI"] = compute_rsi(df_for_signal_gen["Close"])      # Corrected: removed backslash
+                    df_for_signal_gen["MA"] = df_for_signal_gen["Close"].rolling(window=20).mean()
+                    df_for_signal_gen["RSI"] = compute_rsi(df_for_signal_gen["Close"])
                 else:
-                    print(f"WARNING [{current_day}]: 'Close' column missing in df_for_signal_gen. MA/RSI might be incorrect for {current_active_strategy_name}.")
+                    print(f"WARNING [{current_day_dt}]: 'Close' column missing in df_for_signal_gen for {current_active_strategy_name}.")
 
                 if current_active_strategy_name == "TrendStrategy":
                     if not df_for_signal_gen.empty:
                         df_for_signal_gen.loc[df_for_signal_gen.index[-1], 'Prediction'] = lstm_signal
                     else:
-                        print(f"WARNING [{current_day}]: df_for_signal_gen is empty, cannot attach LSTM prediction for TrendStrategy.")
+                        print(f"WARNING [{current_day_dt}]: df_for_signal_gen is empty for TrendStrategy signal.")
             
-                current_active_strategy = StrategyClass(**current_active_strategy_params if current_active_strategy_params else {})
-                min_lookback_needed_by_strategy = getattr(current_active_strategy, 'MIN_LOOKBACK', MAX_LOOKBACK_PERIOD)
+                current_active_strategy_instance = StrategyClass(**current_active_strategy_params if current_active_strategy_params else {})
+                min_lookback_needed_by_strategy = getattr(current_active_strategy_instance, 'MIN_LOOKBACK', MAX_LOOKBACK_PERIOD)
 
                 if len(df_for_signal_gen) >= min_lookback_needed_by_strategy:
-                    print(f"LOG [{log_date_str}] [{STOCK_SYMBOL}] Strategy: {current_active_strategy_name}, Params: {current_active_strategy_params}, Data len: {len(df_for_signal_gen)}")
+                    position_status = "Long" if simulator.current_position > 0 else "Short" if simulator.current_position < 0 else None
                     try:
-                        position_status = None
-                        if simulator.current_position > 0: position_status = "Long"
-                        elif simulator.current_position < 0: position_status = "Short"
-                        
-                        print(f"DEBUG [{current_day}]: Calling {current_active_strategy_name}.generate_signal with df_for_signal_gen (len {len(df_for_signal_gen)}), current_index={current_day}, position='{position_status}'")
-                        signal_action_str = current_active_strategy.generate_signal(
-                            data_slice=df_for_signal_gen,
-                            current_index=current_day,
-                            position=position_status
+                        signal_action_str = current_active_strategy_instance.generate_signal(
+                            data_slice=df_for_signal_gen, current_index=current_day_dt, position=position_status
                         )
-                        print(f"LOG [{log_date_str}] [{STOCK_SYMBOL}] Strategy Signal Output ({current_active_strategy_name}): '{signal_action_str}'")
+                        print(f"LOG [{log_date_str}] Strategy Signal ({current_active_strategy_name}): '{signal_action_str}'")
+                        signal_action_str = signal_action_str.upper() # Convert to uppercase
                     except Exception as e:
-                        print(f"ERROR [{log_date_str}] [{STOCK_SYMBOL}] Error generating signal from strategy {current_active_strategy_name}: {e}")
-                        signal_action_str = "HOLD" # Default to HOLD on error
+                        print(f"ERROR [{log_date_str}] Error generating signal from {current_active_strategy_name}: {e}")
+                        signal_action_str = "HOLD" 
                 else:
-                    print(f"WARNING [{current_day}]: Not enough data for strategy {current_active_strategy_name} (needs {min_lookback_needed_by_strategy}, got {len(df_for_signal_gen)}). Holding.")
+                    print(f"WARNING [{current_day_dt}]: Not enough data for {current_active_strategy_name}. Holding.")
                     signal_action_str = "HOLD"
-        elif forced_trade_action:
-             print(f"LOG [{log_date_str}] [{STOCK_SYMBOL}] LLM forced action {forced_trade_action} will be processed. Regular strategy skipped.")
-        else: # No active strategy, or strategy not in classes
-            print(f"LOG [{log_date_str}] [{STOCK_SYMBOL}] No valid active strategy or forced action. Holding.")
 
+                # --- Execute trade based on signal_action_str ---
+                if signal_action_str in ["BUY", "SELL"]:
+                    price_for_trade = today_row['Open'].iloc[0]
+                    # Calculate quantity using REGULAR_TRADE_CAPITAL_ALLOCATION * final_trade_capital_factor
+                    capital_to_use = simulator.cash * REGULAR_TRADE_CAPITAL_ALLOCATION * final_trade_capital_factor
+                    quantity_to_trade = int(capital_to_use / price_for_trade)
+                    quantity_to_trade = simulator._adjust_quantity(quantity_to_trade)
 
-        # --- Determine Final Trade Action and Execute ---
-        final_trade_action = 0 
-        # quantity_to_trade will be calculated later
+                    if quantity_to_trade > 0:
+                        if signal_action_str == "BUY":
+                            if simulator.current_position < 0 : # Covering short
+                                trade_executed_this_iteration = simulator.buy(price_for_trade, simulator.current_position_quantity, current_day_dt, trade_type="RegularCover")
+                            elif simulator.current_position == 0: # New long
+                                trade_executed_this_iteration = simulator.buy(price_for_trade, quantity_to_trade, current_day_dt, trade_type="RegularBuy")
+                        elif signal_action_str == "SELL":
+                            if simulator.current_position > 0: # Exiting long
+                                trade_executed_this_iteration = simulator.sell(price_for_trade, simulator.current_position_quantity, current_day_dt, trade_type="RegularSell")
+                            elif simulator.current_position == 0 and ALLOW_SHORT_SELLING: # New short
+                                trade_executed_this_iteration = simulator.sell(price_for_trade, quantity_to_trade, current_day_dt, trade_type="RegularShort")
+                    else:
+                        print(f"LOG [{log_date_str}]: Calculated quantity is 0 for {signal_action_str}. No trade.")
+                
+                trade_occurred_today = True if trade_executed_this_iteration else False
+                if trade_occurred_today:
+                    days_since_last_trade = 0
+                else:
+                    days_since_last_trade += 1
+            else: # No active strategy
+                 print(f"LOG [{log_date_str}]: No valid active strategy. Holding.")
+                 days_since_last_trade += 1
+        else: # A forced trade was executed, or halt flag is on
+            if not halt_all_new_trades_flag : # if not halting, means forced trade happened or abstained
+                 if not forced_trade_action or forced_trade_action == "AbstainForceTrade":
+                    days_since_last_trade +=1 # only increment if no trade truly happened
 
-        # 1. 優先處理 LLM 強制交易決策
-        if forced_trade_action == "ForcedBuy": # This variable is set after LLM call for forced trade
-            final_trade_action = 2 # 強制買入
-            print(f"DEBUG [{current_day}]: LLM decided ForcedBuy. Quantity to be calculated at execution.")
-        elif forced_trade_action == "ForcedShort":
-            final_trade_action = -2 # 強制賣出（放空）
-            print(f"DEBUG [{current_day}]: LLM decided ForcedShort. Quantity to be calculated at execution.")
-        elif forced_trade_action == "AbstainForceTrade":
-            final_trade_action = 0 
-            print(f"DEBUG [{current_day}]: AbstainForceTrade action by LLM. No trade.")
+        # --- Daily PNL Update & Portfolio Protection Check ---
+        if trade_executed_this_iteration: # A trade log entry was returned
+            # Update current_year_pnl_tracker with the PNL from the executed trade
+            # Ensure PNL is a float, default to 0.0 if not present or not a number
+            pnl_from_trade = trade_executed_this_iteration.get('PNL', 0.0)
+            if isinstance(pnl_from_trade, (int, float)):
+                current_year_pnl_tracker += pnl_from_trade
+            else:
+                print(f"Warning: PNL value '{pnl_from_trade}' from trade is not a number. Skipping PNL update for this trade.")
+
+        if ENABLE_PORTFOLIO_PROTECTION and \
+           not portfolio_protection_triggered_this_year and \
+           protected_profit_level > 0 and \
+           current_year > PORTFOLIO_START_YEAR:
+            
+            # current_year_pnl_tracker should reflect PNL from Jan 1 of current_year up to today
+            if current_year_pnl_tracker < 0 and abs(current_year_pnl_tracker) > protected_profit_level:
+                portfolio_protection_triggered_this_year = True
+                print(f"!!! PORTFOLIO PROTECTION TRIGGERED for year {current_year} !!!")
+                print(f"Current Year PNL Tracker: {current_year_pnl_tracker:.2f}, Protected Level: {protected_profit_level:.2f}")
+                
+                if PORTFOLIO_PROTECTION_ACTION == "HALT_TRADING":
+                    halt_all_new_trades_flag = True
+                    print("Action: HALT_TRADING activated for the rest of the year.")
+                elif PORTFOLIO_PROTECTION_ACTION == "REDUCE_RISK":
+                    effective_capital_factor_limit = PORTFOLIO_REDUCED_RISK_FACTOR_MAX
+                    print(f"Action: REDUCE_RISK activated. Capital factor limit set to {effective_capital_factor_limit:.2f}")
+        # --- End Daily PNL Update & Portfolio Protection Check ---
+
+        # --- Stop Loss / Take Profit Checks for open positions ---
+        # These should be checked daily regardless of new signals, if a position is open
+        # Make sure current_day_dt is passed to these functions
+        if simulator.is_forced_trade_active():
+            closed_forced_trade_log = simulator.check_forced_trade_closure(today_row['Close'].iloc[0], current_day_dt)
+            if closed_forced_trade_log: 
+                trade_occurred_today = True; days_since_last_trade = 0
+                # Update PNL tracker if a forced trade was closed by SL/TP
+                pnl_from_closure = closed_forced_trade_log.get('PNL', 0.0)
+                if isinstance(pnl_from_closure, (int, float)): current_year_pnl_tracker += pnl_from_closure
+        elif simulator.current_position != 0: # Regular trade is active
+            closed_regular_trade_log = simulator.check_stop_loss_take_profit(today_row['Close'].iloc[0], current_day_dt)
+            if closed_regular_trade_log: 
+                trade_occurred_today = True; days_since_last_trade = 0
+                # Update PNL tracker if a regular trade was closed by SL/TP
+                pnl_from_closure = closed_regular_trade_log.get('PNL', 0.0)
+                if isinstance(pnl_from_closure, (int, float)): current_year_pnl_tracker += pnl_from_closure
         
-        # 2. 如果沒有 LLM 強制交易 (或LLM決定不強制)，則處理一般策略訊號
-        elif signal_action_str: # This elif implies not a ForcedBuy/ForcedShort by LLM
-            # 統一格式，首字母大寫
-            action = str(signal_action_str).strip().capitalize()
-            if action == "Buy":
-                final_trade_action = 1
-                print(f"DEBUG [{current_day}]: Regular BUY signal. Quantity to be calculated at execution.")
-            elif action == "Sell" or action == "Short":
-                final_trade_action = -1
-                print(f"DEBUG [{current_day}]: Regular SELL/SHORT signal. Quantity to be calculated at execution.")
-            elif action == "Cover":
-                # Cover 視為平空單，等同於 Buy
-                final_trade_action = 1
-                print(f"DEBUG [{current_day}]: Regular COVER signal (close short). Quantity to be calculated at execution.")
-            elif action == "Hold":
-                final_trade_action = 0
-                print(f"DEBUG [{current_day}]: Regular HOLD signal.")
-            else:
-                print(f"WARNING [{current_day}]: Unknown signal_action_str: '{signal_action_str}'. Holding.")
-                final_trade_action = 0
-        # else: final_trade_action remains 0 if no forced action and no signal_action_str
+        simulator.update_portfolio_value(today_row['Close'].iloc[0]) # Update with day's close
+        simulator.record_daily_capital(current_day_dt) # Record capital at end of day
 
-        # Execute trade if data for today is available
-        if not today_row.empty and 'Open' in today_row.columns and 'Close' in today_row.columns:
-            current_price_open = today_row['Open'].iloc[0]
-            current_price_close = today_row['Close'].iloc[0]
+        current_day_dt += timedelta(days=1)
+    # --- End Main Loop ---
 
-            trade_log_entry = None 
-            quantity_to_trade = 0 
-            trade_type_label = "Unknown"
+    # Finalize simulation (e.g., close any open positions)
+    # This is handled by simulator.simulate's end part, but if main loop drives daily, ensure it's called.
+    if simulator.current_position != 0 and not df[df['date'] == (current_day_dt - timedelta(days=1))].empty:
+         last_day_data = df[df['date'] == (current_day_dt - timedelta(days=1))].iloc[0]
+         closing_price = last_day_data['Close']
+         print(f"End of simulation. Closing position at {closing_price} on {last_day_data['date']}")
+         if simulator.current_position > 0:
+             final_log = simulator.sell(closing_price, simulator.current_position_quantity, last_day_data['date'], trade_type="EndOfSim")
+         elif simulator.current_position < 0:
+             final_log = simulator.buy(closing_price, simulator.current_position_quantity, last_day_data['date'], trade_type="EndOfSim")
+         if final_log:
+            pnl_from_final_closure = final_log.get('PNL', 0.0)
+            if isinstance(pnl_from_final_closure, (int, float)): current_year_pnl_tracker += pnl_from_final_closure
 
-            if final_trade_action != 0:
-                available_cash = simulator.cash # Use direct attribute access
 
-                if abs(final_trade_action) == 2: # Forced Trade (ForcedBuy=2, ForcedShort=-2)
-                    trade_type_label = "Forced"
-                    if available_cash > 0 and FORCED_TRADE_CAPITAL_ALLOCATION > 0 and current_price_open > 0:
-                        quantity_to_trade = int((available_cash * FORCED_TRADE_CAPITAL_ALLOCATION) / current_price_open)
-                        quantity_to_trade = simulator._adjust_quantity(quantity_to_trade)
-                    
-                    if final_trade_action == -2 and not ALLOW_SHORT_SELLING:
-                        print(f"LOG [{log_date_str}] [{STOCK_SYMBOL}] Forced Short signal by LLM ignored: Short selling disabled.")
-                        quantity_to_trade = 0 
-               
-                elif abs(final_trade_action) == 1: # Regular Strategy Trade (Buy=1, Sell=-1)
-                    trade_type_label = "Regular"
-                    if final_trade_action == 1: # Buy
-                        if available_cash > 0 and REGULAR_TRADE_CAPITAL_ALLOCATION > 0 and current_price_open > 0:
-                            quantity_to_trade = int((available_cash * REGULAR_TRADE_CAPITAL_ALLOCATION) / current_price_open)
-                            quantity_to_trade = simulator._adjust_quantity(quantity_to_trade)
-                    elif final_trade_action == -1: # Sell (to close long or open short)
-                        if simulator.current_position > 0: # Closing existing long position
-                            quantity_to_trade = simulator.current_position_quantity 
-                        elif ALLOW_SHORT_SELLING: # Opening new short position
-                            if available_cash > 0 and REGULAR_TRADE_CAPITAL_ALLOCATION > 0 and current_price_open > 0:
-                                quantity_to_trade = int((available_cash * REGULAR_TRADE_CAPITAL_ALLOCATION) / current_price_open)
-                                quantity_to_trade = simulator._adjust_quantity(quantity_to_trade)
-                        else: # Not allowed to short and no long position to close
-                            print(f"LOG [{log_date_str}] [{STOCK_SYMBOL}] Strategy Sell (to open short) ignored: Short selling disabled and no long position.")
-                            quantity_to_trade = 0
-               
-                if quantity_to_trade <= 0:
-                    if not (final_trade_action == -1 and simulator.current_position > 0 and quantity_to_trade > 0):
-                        if final_trade_action != 0:
-                             print(f"DEBUG [{log_date_str}] Action {final_trade_action} intended, but calculated quantity is {quantity_to_trade}. No trade executed.")
-                        final_trade_action = 0 
-               
-                if final_trade_action != 0 and quantity_to_trade > 0:
-                    if final_trade_action == 1 or final_trade_action == 2: # Buy or ForcedBuy
-                        print(f"DEBUG [{log_date_str}] Attempting BUY: Price={current_price_open}, Qty={quantity_to_trade}, Type={trade_type_label}") # Corrected f-string
-                        trade_log_entry = simulator.buy(price=current_price_open, quantity=quantity_to_trade, date_to_log=current_day, trade_type=trade_type_label)
-                    elif final_trade_action == -1 or final_trade_action == -2: # Sell or ForcedShort
-                        print(f"DEBUG [{log_date_str}] Attempting SELL: Price={current_price_open}, Qty={quantity_to_trade}, Type={trade_type_label}") # Corrected f-string
-                        trade_log_entry = simulator.sell(price=current_price_open, quantity=quantity_to_trade, date_to_log=current_day, trade_type=trade_type_label)
+    final_trade_log_df = simulator.get_trade_log_df()
+    final_daily_capital_df = simulator.get_daily_capital_df()
 
-            if trade_log_entry:
-                trade_logs.append(trade_log_entry)
-                trade_occurred_today = True
-                print(f"LOG [{log_date_str}] [{STOCK_SYMBOL}] Trade Executed: {trade_log_entry}")
-            
-            # Daily EOD updates: portfolio value, stop-loss/take-profit checks
-            simulator.update_portfolio_value(current_price_close)
-            
-            sl_tp_log_entries = [] 
-            if not simulator.is_forced_trade_active() and simulator.current_position != 0 : 
-                 sl_tp_log_entry = simulator.check_stop_loss_take_profit(current_price_close, date_to_log=current_day)
-                 if sl_tp_log_entry:
-                    sl_tp_log_entries.append(sl_tp_log_entry)
-
-            forced_closure_log_entries = []
-            if ENABLE_FORCED_TRADING and simulator.is_forced_trade_active():
-                forced_closure_log_entry = simulator.check_forced_trade_closure(current_price_close, date_to_log=current_day)
-                if forced_closure_log_entry:
-                    forced_closure_log_entries.append(forced_closure_log_entry)
-
-            for log_entry in sl_tp_log_entries + forced_closure_log_entries:
-                trade_logs.append(log_entry)
-                trade_occurred_today = True 
-                print(f"LOG [{log_date_str}] [{STOCK_SYMBOL}] Position Closed (SL/TP/Forced): {log_entry}")
-
-            # Update days_since_last_trade based on whether any trade activity occurred THIS day
-            if trade_occurred_today:
-                days_since_last_trade = 0
-            else:
-                days_since_last_trade += 1
-            
-            current_total_value = simulator.cash + simulator.portfolio_value
-            daily_results_df.loc[len(daily_results_df)] = {'date': current_day, 'capital': current_total_value}
-            print(f"DEBUG [{log_date_str}] EOD. Cash: {simulator.cash:.2f}, Portfolio Value: {simulator.portfolio_value:.2f}, Total: {current_total_value:.2f}, Position: {simulator.current_position}, Days no trade: {days_since_last_trade}")
-
-        else: 
-            print(f"DEBUG [{current_day}]: Skipping trade execution and daily EOD updates due to missing Open/Close price for the day.")
-            days_since_last_trade += 1 # Still a day of no trading activity
-            if not daily_results_df.empty:
-                last_capital = daily_results_df['capital'].iloc[-1]
-                daily_results_df.loc[len(daily_results_df)] = {'date': current_day, 'capital': last_capital}
-                print(f"DEBUG [{log_date_str}] Missing price data. Carrying forward last capital: {last_capital:.2f}. Days no trade: {days_since_last_trade}")
-            else:
-                 daily_results_df.loc[len(daily_results_df)] = {'date': current_day, 'capital': INITIAL_CAPITAL} 
-                 print(f"DEBUG [{log_date_str}] Missing price data & no prior capital. Recording initial capital: {INITIAL_CAPITAL:.2f}. Days no trade: {days_since_last_trade}")
-
-        # 新增：每日都記錄資本到 simulator
-        simulator.record_daily_capital(current_day)
-
-        current_day += timedelta(days=1)
-        # --- END 日期迴圈 ---
-
-    # === 回測結束後的處理 ===
-    # 確保最後的部位被平倉 (如果 trade_simulator.py 中的 simulate 方法沒有處理)
-    # simulator.simulate() 方法末尾已經加入了平倉邏輯，此處可能無需重複
-    # 但如果直接調用 simulator 的 buy/sell 等方法，則需要確保此處有平倉
-    if simulator.current_position != 0 and not df.empty:
-        last_day_data = df.iloc[-1] # Use the last day from the backtest period df
-        last_close_price = simulator._round_price(last_day_data["Close"])
-        last_date = last_day_data["date"] # This should be a date object
-        logging.info(f"SIMULATOR: Main loop end. Closing remaining position at {last_close_price} on {last_date}")
-        final_log = None
-        if simulator.current_position > 0: # Long position
-            final_log = simulator.sell(last_close_price, abs(simulator.current_position), date_to_log=last_date, trade_type="EndOfLoop")
-        elif simulator.current_position < 0: # Short position
-            final_log = simulator.buy(last_close_price, abs(simulator.current_position), date_to_log=last_date, trade_type="EndOfLoop")
-        if final_log:
-            trade_logs.append(final_log)
-            # Update daily capital for the very last day after closing
-            simulator.update_portfolio_value(last_close_price) # Should be 0 after closing
-            current_total_capital = simulator.cash + simulator.portfolio_value
-            # Check if last_date already exists, if so, update, else append
-            found_last_date_capital = False
-            for record in simulator.daily_capital:
-                if record['date'] == last_date:
-                    record['capital'] = current_total_capital
-                    found_last_date_capital = True
-                    break
-            if not found_last_date_capital:
-                 simulator.daily_capital.append({"date": last_date, "capital": current_total_capital})
-
+    # === 結果分析與報告 ===
     # 在寫入 trade_log.csv 前，強制型態轉換，避免報表產生失敗
     final_trade_log_df = simulator.get_trade_log_df()
     if not final_trade_log_df.empty:
@@ -867,11 +943,4 @@ def main(): # Consolidate all execution logic into this main function
 
 
 if __name__ == "__main__":
-    # 設定日誌級別
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s [%(asctime)s]: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    # logging.getLogger().setLevel(logging.DEBUG) # Uncomment for more detailed debug messages from all modules
-    
-    # 匯入 os 以便檢查檔案是否存在 (用於 Excel 寫入)
-    import os
-
     main()
