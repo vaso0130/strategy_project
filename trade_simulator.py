@@ -3,31 +3,28 @@ import numpy as np
 import config # Import config
 
 class TradeSimulator:
-    def __init__(self, initial_capital: int, stop_loss: float, allow_short: bool, stock_symbol: str, short_qty_cap: int = 1000,
-                 # New parameters for forced trading
-                 enable_forced_trading: bool = False,
-                 forced_trade_take_profit_pct: float = 0.05,
-                 forced_trade_stop_loss_pct: float = 0.02,
-                 forced_trade_use_trailing_stop: bool = False,
-                 forced_trade_capital_allocation: float = 0.25, # Added forced_trade_capital_allocation
-                 # New parameters for trade unit and precision
-                 trade_unit: int = 1, 
-                 price_precision_rules: dict = None): 
+    def __init__(self, initial_capital: int, stop_loss: float, allow_short: bool, stock_symbol: str, short_qty_cap: int,
+                 enable_forced_trading: bool,
+                 forced_trade_take_profit_pct: float,
+                 forced_trade_stop_loss_pct: float,
+                 forced_trade_use_trailing_stop: bool,
+                 forced_trade_capital_allocation: float,
+                 trade_unit: int,
+                 price_precision_rules: dict): 
+        # 所有參數都必須由外部明確傳入，不允許預設值
         self.initial_capital = initial_capital
         self.stop_loss = stop_loss # For regular trades
         self.allow_short = allow_short
         self.stock_symbol = stock_symbol
         self.short_qty_cap = short_qty_cap
-        
         self.enable_forced_trading = enable_forced_trading
         self.forced_trade_take_profit_pct = forced_trade_take_profit_pct
         self.forced_trade_stop_loss_pct = forced_trade_stop_loss_pct
         self.forced_trade_use_trailing_stop = forced_trade_use_trailing_stop
         self.forced_trade_capital_allocation = forced_trade_capital_allocation
-
         self.trade_unit = trade_unit
         self.price_precision_rules = price_precision_rules if price_precision_rules else {}
-        self._log_trade_details = True # 可在初始化時設定是否記錄詳細交易日誌
+        self._log_trade_details = True 
 
         # Initialize attributes that will be used later
         self.cash = self.initial_capital
@@ -63,6 +60,13 @@ class TradeSimulator:
         self.forced_trade_take_profit_target = 0.0
         self.forced_trade_stop_loss_target = 0.0
         self.forced_trade_trailing_stop_price = 0.0 # Initialized, will be updated if trailing stop is used
+
+        # For regular trades (trailing stop)
+        self.regular_trade_use_trailing_stop = config.REGULAR_TRADE_USE_TRAILING_STOP
+        self.regular_trade_trailing_stop_pct = config.REGULAR_TRADE_TRAILING_STOP_PCT
+        self.regular_trade_trailing_stop_price = None
+        self.regular_trade_highest_price_since_entry = 0
+        self.regular_trade_lowest_price_since_entry = float('inf')
 
         # Load from config
         self.commission_rate = config.COMMISSION_RATE
@@ -103,6 +107,11 @@ class TradeSimulator:
         self.forced_trade_direction = None # "long" or "short" for forced trades
         self.forced_trade_trailing_stop_price = 0
         self.current_forced_trade_id = None # Separate ID for forced trades if needed, or use current_trade_id
+
+        # Reset regular trade trailing stop attributes
+        self.regular_trade_trailing_stop_price = None
+        self.regular_trade_highest_price_since_entry = 0
+        self.regular_trade_lowest_price_since_entry = float('inf')
 
     def _get_price_precision(self, price: float) -> int:
         """根據價格決定小數點位數"""
@@ -258,7 +267,15 @@ class TradeSimulator:
         trade_log_entry = {
             "Date": pd.Timestamp(date_to_log).strftime('%Y%m%d'), # Ensure consistent date format
             "Action": log_action, "Symbol": self.stock_symbol, "Price": price, 
-            "Quantity": adjusted_quantity, 
+            # 依照動作決定正負號：
+            # BuyEntry/BuyAdd/SellExit/SellSL/ForcedSell... 都是正數
+            # ShortEntry/ShortAdd 則為負數
+            # CoverExit/CoverSL/ForcedCover... 則為正數
+            "Quantity": (
+                -adjusted_quantity if log_action in ["ShortEntry", "ShortAdd"] else
+                adjusted_quantity if log_action in ["BuyEntry", "BuyAdd", "SellExit", "SellSL", "ForcedSellTSL", "ForcedSellSL", "ForcedSellTP", "SellEndOfSim", "CoverExit", "CoverSL", "ForcedCoverTSL", "ForcedCoverSL", "ForcedCoverTP", "CoverEndOfSim"]
+                else adjusted_quantity
+            ),
             "PNL": round(pnl, 2), # PNL is now calculated for closing trades
             "Cash": round(self.cash, 2), 
             "TradeID": current_trade_id, # Use the generated trade ID
@@ -383,7 +400,15 @@ class TradeSimulator:
         trade_log_entry = {
             "Date": pd.Timestamp(date_to_log).strftime('%Y%m%d'),
             "Action": log_action, "Symbol": self.stock_symbol, "Price": price, 
-            "Quantity": adjusted_quantity, 
+            # 依照動作決定正負號：
+            # BuyEntry/BuyAdd/SellExit/SellSL/ForcedSell... 都是正數
+            # ShortEntry/ShortAdd 則為負數
+            # CoverExit/CoverSL/ForcedCover... 則為正數
+            "Quantity": (
+                -adjusted_quantity if log_action in ["ShortEntry", "ShortAdd"] else
+                adjusted_quantity if log_action in ["BuyEntry", "BuyAdd", "SellExit", "SellSL", "ForcedSellTSL", "ForcedSellSL", "ForcedSellTP", "SellEndOfSim", "CoverExit", "CoverSL", "ForcedCoverTSL", "ForcedCoverSL", "ForcedCoverTP", "CoverEndOfSim"]
+                else adjusted_quantity
+            ),
             "PNL": round(pnl, 2),
             "Cash": round(self.cash, 2), 
             "TradeID": current_trade_id,
@@ -395,27 +420,55 @@ class TradeSimulator:
         return trade_log_entry
 
     def check_stop_loss_take_profit(self, current_price: float, date_to_log): # Added date_to_log
-        """Checks and executes stop-loss or take-profit for regular trades."""
-        
+        """Checks and executes stop-loss or take-profit for regular trades, now with optional trailing stop."""
         if self.is_forced_trade or self.current_position == 0 or not self.direction:
             return None # Not a regular trade or no position
 
         trade_log = None
-        # Regular Stop Loss
+        # Regular Stop Loss (with trailing stop)
         if self.direction == "long":
-            stop_loss_price = self._round_price(self.entry_price * (1 - self.stop_loss))
-            if current_price <= stop_loss_price:
-                print(f"SIMULATOR: Regular Long SL triggered at {stop_loss_price}")
-                trade_log = self.sell(stop_loss_price, abs(self.current_position), date_to_log, trade_type="RegularSL") # Pass date
+            # 更新最高價
+            self.regular_trade_highest_price_since_entry = max(self.regular_trade_highest_price_since_entry, current_price)
+            if self.regular_trade_use_trailing_stop:
+                potential_new_trailing_stop = self._round_price(self.regular_trade_highest_price_since_entry * (1 - self.regular_trade_trailing_stop_pct))
+                if self.regular_trade_trailing_stop_price is None:
+                    self.regular_trade_trailing_stop_price = potential_new_trailing_stop
+                else:
+                    self.regular_trade_trailing_stop_price = max(self.regular_trade_trailing_stop_price, potential_new_trailing_stop)
+                if current_price <= self.regular_trade_trailing_stop_price:
+                    print(f"SIMULATOR: Regular Long TRAILING SL triggered at {self.regular_trade_trailing_stop_price}")
+                    trade_log = self.sell(self.regular_trade_trailing_stop_price, abs(self.current_position), date_to_log, trade_type="RegularTSL")
+            # 固定停損（僅在未觸發移動停損時）
+            elif not trade_log:
+                stop_loss_price = self._round_price(self.entry_price * (1 - self.stop_loss))
+                if current_price <= stop_loss_price:
+                    print(f"SIMULATOR: Regular Long SL triggered at {stop_loss_price}")
+                    trade_log = self.sell(stop_loss_price, abs(self.current_position), date_to_log, trade_type="RegularSL")
         elif self.direction == "short":
-            stop_loss_price = self._round_price(self.entry_price * (1 + self.stop_loss))
-            if current_price >= stop_loss_price:
-                print(f"SIMULATOR: Regular Short SL triggered at {stop_loss_price}")
-                trade_log = self.buy(stop_loss_price, abs(self.current_position), date_to_log, trade_type="RegularSL") # Pass date
-        
+            # 更新最低價
+            self.regular_trade_lowest_price_since_entry = min(self.regular_trade_lowest_price_since_entry, current_price)
+            if self.regular_trade_use_trailing_stop:
+                potential_new_trailing_stop = self._round_price(self.regular_trade_lowest_price_since_entry * (1 + self.regular_trade_trailing_stop_pct))
+                if self.regular_trade_trailing_stop_price is None:
+                    self.regular_trade_trailing_stop_price = potential_new_trailing_stop
+                else:
+                    self.regular_trade_trailing_stop_price = min(self.regular_trade_trailing_stop_price, potential_new_trailing_stop)
+                if current_price >= self.regular_trade_trailing_stop_price:
+                    print(f"SIMULATOR: Regular Short TRAILING SL triggered at {self.regular_trade_trailing_stop_price}")
+                    trade_log = self.buy(self.regular_trade_trailing_stop_price, abs(self.current_position), date_to_log, trade_type="RegularTSL")
+            # 固定停損（僅在未觸發移動停損時）
+            elif not trade_log:
+                stop_loss_price = self._round_price(self.entry_price * (1 + self.stop_loss))
+                if current_price >= stop_loss_price:
+                    print(f"SIMULATOR: Regular Short SL triggered at {stop_loss_price}")
+                    trade_log = self.buy(stop_loss_price, abs(self.current_position), date_to_log, trade_type="RegularSL")
         if trade_log:
             self.direction = None # Position closed
             # PNL is handled within buy/sell
+            # 重置 trailing stop 狀態
+            self.regular_trade_trailing_stop_price = None
+            self.regular_trade_highest_price_since_entry = 0
+            self.regular_trade_lowest_price_since_entry = float('inf')
         return trade_log
 
     def check_forced_trade_closure(self, current_price: float, date_to_log): # Added date_to_log

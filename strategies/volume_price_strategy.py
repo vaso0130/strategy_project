@@ -13,11 +13,13 @@ class VolumePriceStrategy(Strategy):
     def generate_signal(self, data_slice, current_index, position):
         # 至少需要 5 筆數據來計算 rolling(window=5)
         if len(data_slice) < 5:
-            # print(f"DEBUG [VolumePriceStrategy]: Not enough data for rolling window. Len: {len(data_slice)}")
             return None
-
         row = data_slice.iloc[-1]
-        # prev_row = data_slice.iloc[-2] if len(data_slice) >= 2 else row # prev_row 未在此邏輯中使用
+        # 新增：允許策略讀取 LSTM_PREDICTION 欄位（若有）與 optimizer 最佳參數（若有）
+        lstm_pred = row.get("LSTM_PREDICTION", None)
+        # 你可以根據 lstm_pred 進行進階判斷，例如：
+        # if lstm_pred == 1: ...
+        # 目前先保留原本邏輯，未強制納入 LSTM 預測
 
         price = row["Close"]
         volume = row.get("Volume") # 使用 .get()
@@ -52,3 +54,8 @@ class VolumePriceStrategy(Strategy):
             if price > ma_short * 0.99 or rsi < rsi_low:
                 action = "Cover"
         return action
+
+    @staticmethod
+    def get_default_params():
+        from config import VOLUME_PRICE_STRATEGY_DEFAULT_PARAMS
+        return VOLUME_PRICE_STRATEGY_DEFAULT_PARAMS.copy()

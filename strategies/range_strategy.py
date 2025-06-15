@@ -9,8 +9,18 @@ class RangeStrategy(Strategy):
     - 有持倉時，如價格反向進入另一端或 RSI反轉 => 平倉
     """
 
+    @staticmethod
+    def get_default_params():
+        from config import RANGE_STRATEGY_DEFAULT_PARAMS
+        return RANGE_STRATEGY_DEFAULT_PARAMS.copy()
+
     def generate_signal(self, data_slice, current_index, position):
         row = data_slice.iloc[-1]
+        # 新增：允許策略讀取 LSTM_PREDICTION 欄位（若有）
+        lstm_pred = row.get("LSTM_PREDICTION", None)
+        # 你可以根據 lstm_pred 進行進階判斷，例如：
+        # if lstm_pred == 1: ...
+        # 目前先保留原本邏輯，未強制納入 LSTM 預測
         date_info = row.name # Assuming index is datetime or has date info
 
         close = row["Close"]

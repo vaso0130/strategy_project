@@ -109,21 +109,27 @@ def main(): # Consolidate all execution logic into this main function
 
     # 將欄位名稱重命名為大寫版本，應在 full_df 載入後立即進行
     # 以確保所有後續衍生的 DataFrame (包括 lstm_initial_train_df 和 df) 都使用一致的欄位名
-    if not full_df.empty:
-        full_df.rename(columns={
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
-            "close": "Close", # MA 和 RSI 將使用此欄位
-            "volume": "Volume"
-        }, inplace=True)
-        # 驗證 'Close' 是否存在
-        if 'Close' not in full_df.columns:
-            print("[警告] full_df 在重命名後仍然缺少 'Close' 欄位。請檢查 load_price_data 的回傳。")
-            # 可以考慮引發錯誤或採取其他處理
-    else:
-        print("[警告] load_price_data 回傳空的 DataFrame。程式即將終止。")
-        return # Exit if no data
+    print("[DEBUG] full_df.columns before rename:", full_df.columns)
+    print("[DEBUG] full_df.head() before rename:\n", full_df.head())
+    full_df.rename(columns={
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close", # MA 和 RSI 將使用此欄位
+        "adjclose": "Close", # Yahoo 有時會是 adjclose
+        "Adj Close": "Close" # 若有空格也加上
+    }, inplace=True)
+    print("[DEBUG] full_df.columns after rename:", full_df.columns)
+    print("[DEBUG] full_df.head() after rename:\n", full_df.head())
+    # 驗證 'Close' 是否存在
+    if 'Close' not in full_df.columns:
+        print("[警告] full_df 在重命名後仍然缺少 'Close' 欄位。請檢查 load_price_data 的回傳。")
+        # 可以考慮引發錯誤或採取其他處理
+
+    # --- 資料欄位重複全面清理 ---
+    # 載入資料、重命名欄位後，立即去除重複欄位，確保 downstream 不會出錯
+    full_df = full_df.loc[:, ~full_df.columns.duplicated()]
+    print(f"[DEBUG] full_df 欄位: {full_df.columns.tolist()}")
 
     # === 初始化元件 ===
     # 使用 config.py 中的 LSTM_EPOCHS 和 LSTM_LEARNING_RATE
@@ -162,9 +168,34 @@ def main(): # Consolidate all execution logic into this main function
 
     # 用於回測的數據 (從 START_DATE 到 END_DATE)
     df = full_df[full_df['date'] >= backtest_start_date_dt].copy().reset_index(drop=True)
+    df = df.loc[:, ~df.columns.duplicated()]
+    print(f"[DEBUG] df 欄位: {df.columns.tolist()}")
+
     if df.empty:
         raise ValueError(f"回測期間 ({START_DATE} 至 {END_DATE}) 無可用數據，請檢查日期設定或資料來源。")
     print(f"[資訊] 回測資料期間：{df['date'].min()} 至 {df['date'].max()}，共 {len(df)} 筆。")
+
+    # === 新增：將 LSTM 預測結果寫入 df 供所有策略參考 ===
+    if initial_train_successful:
+        lookback = lstm.lookback if hasattr(lstm, 'lookback') else LSTM_LOOKBACK_DAYS
+        if len(df) >= lookback:
+            # 只保留一個 'Close' 欄位，避免重複
+            lstm_input = df.loc[:, ~df.columns.duplicated()][['Close']].tail(lookback)
+            print(f"[DEBUG] LSTM predict input shape: {lstm_input.shape}, columns: {lstm_input.columns}")
+            lstm_pred_signal = lstm.predict(lstm_input)
+            print(f"[DEBUG] LSTM predict output: {lstm_pred_signal}")
+            df['LSTM_PREDICTION'] = lstm_pred_signal  # 全部填同一個信號
+        else:
+            print(f"[警告] df 資料長度 {len(df)} 小於 lookback {lookback}，無法進行 LSTM 預測。")
+            df['LSTM_PREDICTION'] = 0
+    else:
+        df['LSTM_PREDICTION'] = 0  # 若無預測則預設為 0
+
+    print(f"[DEBUG] df['LSTM_PREDICTION'] 前 5 筆: {df['LSTM_PREDICTION'].head().tolist()}")
+    # 若有 select_strategy_and_params 或策略物件，請在傳遞時加上 debug print
+    # 例如：
+    # print(f"[DEBUG] 傳遞給 LLM 的 LSTM_PREDICTION: {df['LSTM_PREDICTION'].iloc[-1]}")
+    # print(f"[DEBUG] 傳遞給 {strategy_name} 的 LSTM_PREDICTION: {df['LSTM_PREDICTION'].iloc[-1]}")
 
     simulator = TradeSimulator(
         initial_capital=INITIAL_CAPITAL,
@@ -248,67 +279,44 @@ def main(): # Consolidate all execution logic into this main function
     # === END 新增 ===
 
     # === 策略參數優化 ===
+    from config import PARAM_GRIDS
     if ENABLE_STRATEGY_OPTIMIZATION:
         print("[資訊] 啟用策略參數優化")
-        param_grids = {
-            "TrendStrategy": { # TrendStrategy 目前使用 main.py 計算的固定 MA(20)
-                               # 如果要讓 ma_period 可優化，TrendStrategy 需修改以接受並使用此參數
-                "rsi_low_entry": [25, 30, 35, 40], # Changed from rsi_low to rsi_low_entry
-                "rsi_high_entry": [65, 70, 75, 80], # Changed from rsi_high to rsi_high_entry
-                # "ma_period": [10, 20] # 暫時註解，因為 TrendStrategy 未使用
-            },
-            "RangeStrategy": {
-                "window": [10, 15, 20],
-                "rsi_low_entry": [25, 30, 35], # Changed from rsi_low
-                "rsi_high_entry": [65, 70, 75], # Changed from rsi_high
-            },
-            "BreakoutStrategy": {
-                "window": [10, 15, 20],
-                "rsi_low": [30, 40, 45], # Keep as rsi_low as per BreakoutStrategy
-                "rsi_high": [60, 65, 70] # Keep as rsi_high as per BreakoutStrategy
-            },
-            "VolumePriceStrategy": { # VolumePriceStrategy 內部使用固定的 ma_short(5)
-                                     # 如果要讓 ma_short_period 可優化，VolumePriceStrategy 需修改
-                "volume_ratio": [1.2, 1.5, 1.8],
-                "rsi_low": [30, 35, 40], # Keep as rsi_low
-                "rsi_high": [60, 65, 70], # Keep as rsi_high
-                # "ma_short_period": [5, 10] # 暫時註解，因為 VolumePriceStrategy 未使用
-            },
-        }
+        param_grids = PARAM_GRIDS.copy()
+    else:
+        param_grids = {}
 
-        eval_map = {
-            "win_rate": lambda m: m.get("win_rate_percentage", 0.0), # 修正鍵名並增加 .get 以防萬一
-            "total_return": lambda m: m.get("total_return_percentage", 0.0), # 修正鍵名並增加 .get
-            "sharpe": lambda m: m.get("sharpe", 0.0), # 增加 .get
-        }
-        evaluator = eval_map.get(STRATEGY_EVALUATOR, lambda m: m.get("sharpe", 0.0))
-        # Correct pre_start_for_opt to use data before START_DATE from full_df
-        pre_start_for_opt = full_df[full_df["date"] < backtest_start_date_dt].copy()
-        print(f"[資訊] 用於策略優化的 pre_start_for_opt 資料期間: {pre_start_for_opt['date'].min() if not pre_start_for_opt.empty else 'N/A'} 至 {pre_start_for_opt['date'].max() if not pre_start_for_opt.empty else 'N/A'}, 共 {len(pre_start_for_opt)} 筆")
+    eval_map = {
+        "win_rate": lambda m: m.get("win_rate_percentage", 0.0), # 修正鍵名並增加 .get 以防萬一
+        "total_return": lambda m: m.get("total_return_percentage", 0.0), # 修正鍵名並增加 .get
+        "sharpe": lambda m: m.get("sharpe", 0.0), # 增加 .get
+    }
+    evaluator = eval_map.get(STRATEGY_EVALUATOR, lambda m: m.get("sharpe", 0.0))
+    # Correct pre_start_for_opt to use data before START_DATE from full_df
+    pre_start_for_opt = full_df[full_df["date"] < backtest_start_date_dt].copy()
+    print(f"[資訊] 用於策略優化的 pre_start_for_opt 資料期間: {pre_start_for_opt['date'].min() if not pre_start_for_opt.empty else 'N/A'} 至 {pre_start_for_opt['date'].max() if not pre_start_for_opt.empty else 'N/A'}, 共 {len(pre_start_for_opt)} 筆")
 
 
-        # optimized_strategy_classes = {} # 此變數目前未實際用於改變策略行為
-        for name, strat_class in strategy_classes.items():
-            grid = param_grids.get(name)
-            if grid:
-                opt = StrategyOptimizer(strat_class, grid, evaluator)
-                # 確保 pre_start_for_opt 有足夠數據且不含過多 NaN，否則優化器可能無法有效運行
-                # The check for max window size and > 20 days
-                min_days_for_opt = max(max(grid.get("window", [0])) if grid.get("window") else 0, 20)
-
-                if not pre_start_for_opt.empty and len(pre_start_for_opt) >= min_days_for_opt:
-                    print(f"[資訊] 開始優化 {name}，使用 {len(pre_start_for_opt)} 筆數據。所需最小數據: {min_days_for_opt}")
-                    result = opt.optimize(pre_start_for_opt.copy()) # 使用 .copy() 避免 SettingWithCopyWarning
-                    best_params = result.get("best_params") or {}
-                    print(f"[優化] {name} 最佳參數: {best_params}")
-                    # 注意：此處找到的 best_params 並未實際更新 param_grids 或影響後續 LLM 的參數選擇範圍
-                    # 如果需要，可以在此處修改 param_grids[name] = {k: [v] for k, v in best_params.items()}
-                    # 或者將 best_params 傳遞給 LLM 作為一個強提示
-                else:
-                    print(f"[優化警告] {name} 的 pre_start_for_opt 數據不足 ({len(pre_start_for_opt)} 筆, 需要 {min_days_for_opt} 筆) 或 grid 配置不當，跳過優化。")
+    # optimized_strategy_classes = {} # 此變數目前未實際用於改變策略行為
+    for name, strat_class in strategy_classes.items():
+        grid = param_grids.get(name)
+        if grid:
+            opt = StrategyOptimizer(strat_class, grid, evaluator)
+            min_days_for_opt = max(max(grid.get("window", [0])) if grid.get("window") else 0, 20)
+            if not pre_start_for_opt.empty and len(pre_start_for_opt) >= min_days_for_opt:
+                print(f"[資訊] 開始優化 {name}，使用 {len(pre_start_for_opt)} 筆數據。所需最小數據: {min_days_for_opt}")
+                result = opt.optimize(pre_start_for_opt.copy())
+                best_params = result.get("best_params") or {}
+                print(f"[優化] {name} 最佳參數: {best_params}")
+                # 僅將 best_params 傳給 LLM 參考，不再自動寫入 param_grids
+            else:
+                print(f"[優化警告] {name} 的 pre_start_for_opt 數據不足 ({len(pre_start_for_opt)} 筆, 需要 {min_days_for_opt} 筆) 或 grid 配置不當，跳過優化。")
 
     print(f"DEBUG: strategy_classes after potential optimization: {strategy_classes}")
     print(f"DEBUG: param_grids used for LLM: {param_grids}")
+
+    # 只將 optimizer_best_params 傳給 LLM 參考，不再作為主流程參數來源
+    optimizer_best_params = {name: best_params if 'best_params' in locals() else {} for name in strategy_classes}
 
     # 初始化用於收集結果的列表
     trade_logs = []
@@ -349,6 +357,9 @@ def main(): # Consolidate all execution logic into this main function
 
 
     prev_strategy_logging_name = None # 用於日誌記錄的變數，以避免重複打印相同的策略
+
+    # 新增：策略切換紀錄列表
+    strategy_switch_log = []
 
     while current_day_dt <= pd.to_datetime(END_DATE).date(): # Use current_day_dt
         current_year = current_day_dt.year
@@ -574,7 +585,7 @@ def main(): # Consolidate all execution logic into this main function
             print(f"DEBUG [{current_day_dt}]: Potential forced trade scenario. Days since last trade: {days_since_last_trade}. Calling LLM for forced trade decision.")
             
             forced_decision, _, _, llm_context_forced = select_strategy_and_params( # Expecting 4 return values now
-                current_date=current_date_str_for_llm, price_data_str=price_data_for_llm_str,
+                current_date=current_date_str_for_llm, price_df=full_df,
                 news_sentiment_summary=news_sentiment_summary_for_llm, available_strategies=available_strategies_for_llm, 
                 lstm_signal=lstm_signal, days_since_last_trade=days_since_last_trade,
                 max_days_no_trade=MAX_DAYS_NO_TRADE, is_forced_trade_scenario=True,
@@ -615,35 +626,63 @@ def main(): # Consolidate all execution logic into this main function
 
             if should_select_new_strategy_target:
                 print(f"DEBUG [{current_day_dt}]: Calling LLM to select/revise strategy target.")
-                strategy_name, strategy_params, llm_capital_factor, llm_context_strat = select_strategy_and_params(
-                    current_date=current_date_str_for_llm, price_data_str=price_data_for_llm_str,
+                # 計算已交易次數與勝率
+                trade_log_df = simulator.get_trade_log_df()
+                total_trades = len(trade_log_df) if not trade_log_df.empty else 0
+                win_rate = None
+                if total_trades > 0 and 'PNL' in trade_log_df.columns:
+                    wins = (trade_log_df['PNL'] > 0).sum()
+                    win_rate = wins / total_trades
+                # 新版：接收 protection_action, protection_reason
+                strategy_name, strategy_params, llm_capital_factor, llm_context_strat, protection_action, protection_reason = select_strategy_and_params(
+                    current_date=current_date_str_for_llm, price_df=full_df,
                     news_sentiment_summary=news_sentiment_summary_for_llm, available_strategies=available_strategies_for_llm,
                     lstm_signal=lstm_signal, days_since_last_trade=days_since_last_trade, 
                     max_days_no_trade=MAX_DAYS_NO_TRADE, is_forced_trade_scenario=False, 
                     current_active_strategy_name=current_active_strategy_name,
                     current_strategy_days_active=days_current_strategy_active,
                     min_strategy_duration=MIN_STRATEGY_DURATION_DAYS,
-                    last_trade_pnl=current_last_trade_pnl, cumulative_pnl=current_cumulative_pnl
+                    last_trade_pnl=current_last_trade_pnl, cumulative_pnl=current_cumulative_pnl,
+                    optimizer_best_params=optimizer_best_params,
+                    regime=regime, # 傳入 regime
+                    total_trades=total_trades, win_rate=win_rate
                 )
+                # 新增：根據 LLM 建議啟動/解除保護機制
+                if protection_action:
+                    print(f"[LLM保護建議] {protection_action}，理由：{protection_reason}")
+                    if protection_action == "HALT_TRADING":
+                        halt_all_new_trades_flag = True
+                    elif protection_action == "REDUCE_RISK":
+                        effective_capital_factor_limit = PORTFOLIO_REDUCED_RISK_FACTOR_MAX
+                    elif protection_action == "RESUME_NORMAL":
+                        halt_all_new_trades_flag = False
+                        effective_capital_factor_limit = 1.0
+
                 llm_suggested_capital_factor_for_trade = llm_capital_factor # Store LLM's suggestion
                 print(f"DEBUG [{current_day_dt}]: LLM (strategy target) returned: name='{strategy_name}', params={strategy_params}, capital_factor={llm_capital_factor}")
 
                 if strategy_name in strategy_classes:
-                    if current_active_strategy_name != strategy_name or current_active_strategy_params != (strategy_params or {}):
-                        current_active_strategy_name = strategy_name
-                        current_active_strategy_params = strategy_params or {}
-                        current_strategy_start_date = current_day_dt 
-                        strategy_repeat_count = 0 # Reset repeat count on new strategy
-                        last_llm_selected_strategy = strategy_name # Track last selected strategy
-                    # else:
-                        # print(f"DEBUG [{current_day_dt}]: LLM re-selected same strategy target '{strategy_name}' with same params. Duration counter continues.")
+                    # 若 LLM 有回傳 strategy_params，直接採用
+                    if strategy_params:
+                        current_active_strategy_params = strategy_params
+                    # 若 LLM 無回傳，則 fallback 到 config.py 預設參數（不可用 optimizer_best_params 或 param_grids）
+                    else:
+                        # 取得 config.py 預設參數（假設每個策略類別有 get_default_params 靜態方法，否則可手動指定）
+                        if hasattr(strategy_classes[strategy_name], 'get_default_params'):
+                            current_active_strategy_params = strategy_classes[strategy_name].get_default_params()
+                        else:
+                            current_active_strategy_params = {}
+                    current_active_strategy_name = strategy_name
+                    current_strategy_start_date = current_day_dt
+                    strategy_repeat_count = 0
+                    last_llm_selected_strategy = strategy_name
                 elif strategy_name == "Abstain" or strategy_name is None:
                     print(f"DEBUG [{current_day_dt}]: LLM abstained from changing strategy target.")
-                else: 
+                else:
                     print(f"WARNING [{current_day_dt}]: LLM returned invalid strategy: '{strategy_name}'. Resetting.")
                     current_active_strategy_name = None; current_active_strategy_params = {}; current_strategy_start_date = None
-            elif current_active_strategy_name: 
-                 print(f"DEBUG [{current_day_dt}]: Continuing with strategy: {current_active_strategy_name}")
+            elif current_active_strategy_name:
+                print(f"DEBUG [{current_day_dt}]: Continuing with strategy: {current_active_strategy_name}")
         
         elif not USE_GEMINI_STRATEGY_SELECTION and not halt_all_new_trades_flag:
             if not current_active_strategy_name: 
@@ -730,7 +769,10 @@ def main(): # Consolidate all execution logic into this main function
                             data_slice=df_for_signal_gen, current_index=current_day_dt, position=position_status
                         )
                         print(f"LOG [{log_date_str}] Strategy Signal ({current_active_strategy_name}): '{signal_action_str}'")
-                        signal_action_str = signal_action_str.upper() # Convert to uppercase
+                        if signal_action_str is not None:
+                            signal_action_str = signal_action_str.upper() # Convert to uppercase
+                        else:
+                            signal_action_str = "HOLD"
                     except Exception as e:
                         print(f"ERROR [{log_date_str}] Error generating signal from {current_active_strategy_name}: {e}")
                         signal_action_str = "HOLD" 
@@ -739,7 +781,7 @@ def main(): # Consolidate all execution logic into this main function
                     signal_action_str = "HOLD"
 
                 # --- Execute trade based on signal_action_str ---
-                if signal_action_str in ["BUY", "SELL"]:
+                if signal_action_str in ["BUY", "SELL", "SHORT"]:
                     price_for_trade = today_row['Open'].iloc[0]
                     # Calculate quantity using REGULAR_TRADE_CAPITAL_ALLOCATION * final_trade_capital_factor
                     capital_to_use = simulator.cash * REGULAR_TRADE_CAPITAL_ALLOCATION * final_trade_capital_factor
@@ -755,7 +797,8 @@ def main(): # Consolidate all execution logic into this main function
                         elif signal_action_str == "SELL":
                             if simulator.current_position > 0: # Exiting long
                                 trade_executed_this_iteration = simulator.sell(price_for_trade, simulator.current_position_quantity, current_day_dt, trade_type="RegularSell")
-                            elif simulator.current_position == 0 and ALLOW_SHORT_SELLING: # New short
+                        elif signal_action_str == "SHORT":
+                            if simulator.current_position == 0 and ALLOW_SHORT_SELLING: # New short
                                 trade_executed_this_iteration = simulator.sell(price_for_trade, quantity_to_trade, current_day_dt, trade_type="RegularShort")
                     else:
                         print(f"LOG [{log_date_str}]: Calculated quantity is 0 for {signal_action_str}. No trade.")
@@ -826,19 +869,28 @@ def main(): # Consolidate all execution logic into this main function
         current_day_dt += timedelta(days=1)
     # --- End Main Loop ---
 
+    # 新增：輸出策略切換紀錄到 strategy_switch_log.csv
+    if strategy_switch_log:
+        pd.DataFrame(strategy_switch_log).to_csv("strategy_switch_log.csv", index=False)
+        print("策略切換紀錄已儲存到 strategy_switch_log.csv")
+
     # Finalize simulation (e.g., close any open positions)
-    # This is handled by simulator.simulate's end part, but if main loop drives daily, ensure it's called.
-    if simulator.current_position != 0 and not df[df['date'] == (current_day_dt - timedelta(days=1))].empty:
-         last_day_data = df[df['date'] == (current_day_dt - timedelta(days=1))].iloc[0]
-         closing_price = last_day_data['Close']
-         print(f"End of simulation. Closing position at {closing_price} on {last_day_data['date']}")
-         if simulator.current_position > 0:
-             final_log = simulator.sell(closing_price, simulator.current_position_quantity, last_day_data['date'], trade_type="EndOfSim")
-         elif simulator.current_position < 0:
-             final_log = simulator.buy(closing_price, simulator.current_position_quantity, last_day_data['date'], trade_type="EndOfSim")
-         if final_log:
-            pnl_from_final_closure = final_log.get('PNL', 0.0)
-            if isinstance(pnl_from_final_closure, (int, float)): current_year_pnl_tracker += pnl_from_final_closure
+    # 依 config 決定是否強制清倉
+    if FORCE_LIQUIDATE_AT_END:
+        # 找到最後一個有資料的交易日
+        last_trade_day_row = df[~df['Close'].isnull()].iloc[-1] if not df[~df['Close'].isnull()].empty else None
+        if simulator.current_position != 0 and last_trade_day_row is not None:
+            closing_price = last_trade_day_row['Close']
+            closing_date = last_trade_day_row['date']
+            print(f"[強制平倉] End of simulation. Closing position at {closing_price} on {closing_date}")
+            if simulator.current_position > 0:
+                final_log = simulator.sell(closing_price, simulator.current_position_quantity, closing_date, trade_type="EndOfSim")
+            elif simulator.current_position < 0:
+                final_log = simulator.buy(closing_price, simulator.current_position_quantity, closing_date, trade_type="EndOfSim")
+            if final_log:
+                pnl_from_final_closure = final_log.get('PNL', 0.0)
+                if isinstance(pnl_from_final_closure, (int, float)):
+                    current_year_pnl_tracker += pnl_from_final_closure
 
 
     final_trade_log_df = simulator.get_trade_log_df()

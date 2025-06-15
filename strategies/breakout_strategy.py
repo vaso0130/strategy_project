@@ -9,12 +9,19 @@ class BreakoutStrategy(Strategy):
     - 持倉時，價格反轉或 RSI 極度反向 => 平倉
     """
 
+    @staticmethod
+    def get_default_params():
+        from config import BREAKOUT_STRATEGY_DEFAULT_PARAMS
+        return BREAKOUT_STRATEGY_DEFAULT_PARAMS.copy()
+
     def generate_signal(self, data_slice, current_index, position):
         row = data_slice.iloc[-1]
         close = row["Close"]
         high = row["High"]
         low = row["Low"]
         rsi = row.get("RSI")
+        # 新增：允許策略讀取 LSTM_PREDICTION 欄位（若有）與 optimizer 最佳參數（若有）
+        lstm_pred = row.get("LSTM_PREDICTION", None)
 
         if pd.isna(close) or pd.isna(high) or pd.isna(low) or pd.isna(rsi):
             return None

@@ -12,7 +12,7 @@ class Strategy(ABC):
         """
         根據當前資料切片與狀態產生交易信號。
 
-        :param data_slice: 包含技術指標與價格的 DataFrame（rolling window）
+        :param data_slice: 包含技術指標、價格與 LSTM_PREDICTION 的 DataFrame（rolling window）
         :param current_index: 現在在整體資料中的索引
         :param position: 是否有持倉（None / "Long" / "Short"）
         :return: "Buy" / "Sell" / "Short" / "Cover" / None

@@ -9,8 +9,16 @@ class TrendStrategy(Strategy):
     - 有持倉時：如反向訊號出現 => 平倉
     """
 
+    @staticmethod
+    def get_default_params():
+        from config import TREND_STRATEGY_DEFAULT_PARAMS
+        return TREND_STRATEGY_DEFAULT_PARAMS.copy()
+
     def generate_signal(self, data_slice, current_index, position):
         row = data_slice.iloc[-1]
+        # 新增：允許策略讀取 LSTM_PREDICTION 欄位（若有）與 optimizer 最佳參數（若有）
+        lstm_pred = row.get("LSTM_PREDICTION", None)
+
         date_info = row.name # Assuming index is datetime or has date info
 
         prediction = row.get("Prediction", 0)
